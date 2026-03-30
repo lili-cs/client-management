@@ -71,15 +71,8 @@ function photoUrl(clientId, filename) {
 }
 
 // ── Render: client list ───────────────────────────────────────────────────────
-function renderList() {
-  const list = document.getElementById('client-list');
-
-  if (!state.clients.length) {
-    list.innerHTML = '<div class="list-empty">No clients yet.<br>Click <strong>New Client</strong> to add one.</div>';
-    return;
-  }
-
-  list.innerHTML = state.clients.map(c => `
+function clientCardHtml(c) {
+  return `
     <div class="client-card ${c.id === state.selectedId ? 'active' : ''}"
          data-id="${escHtml(c.id)}" role="button" tabindex="0">
       <div class="card-avatar" style="background:${avatarColor(c.name)}">
@@ -88,14 +81,48 @@ function renderList() {
           : escHtml(initials(c.name))}
       </div>
       <div class="card-info">
-        <div class="card-name">${escHtml(c.name)}</div>
-        <div class="card-sub">${escHtml(c.manager || c.clinic_name || c.email || '—')}</div>
+        <div class="card-name">${escHtml(c.clinic_name || c.name)}</div>
+        <div class="card-sub">${escHtml(c.manager || c.email || '—')}</div>
       </div>
       ${c.photo_count > 0
         ? `<span class="card-badge" title="${c.photo_count} photo${c.photo_count !== 1 ? 's' : ''}">📷 ${c.photo_count}</span>`
         : ''}
-    </div>
-  `).join('');
+    </div>`;
+}
+
+function renderList() {
+  const list = document.getElementById('client-list');
+
+  if (!state.clients.length) {
+    list.innerHTML = '<div class="list-empty">No clients yet.<br>Click <strong>New Client</strong> to add one.</div>';
+    return;
+  }
+
+  // Group by area (clients already sorted area ASC, clinic_name ASC from server)
+  const NO_AREA = '__none__';
+  const groups  = new Map();
+
+  for (const c of state.clients) {
+    const key = (c.area || '').trim() || NO_AREA;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(c);
+  }
+
+  // Named areas first (alphabetical), then no-area group last
+  const sortedKeys = [...groups.keys()].sort((a, b) => {
+    if (a === NO_AREA) return 1;
+    if (b === NO_AREA) return -1;
+    return a.localeCompare(b);
+  });
+
+  let html = '';
+  for (const key of sortedKeys) {
+    const label = key === NO_AREA ? 'No Area' : key;
+    html += `<div class="area-header">${escHtml(label)}</div>`;
+    html += groups.get(key).map(clientCardHtml).join('');
+  }
+
+  list.innerHTML = html;
 
   list.querySelectorAll('.client-card').forEach(card => {
     card.addEventListener('click', () => selectClient(card.dataset.id));
@@ -135,6 +162,7 @@ function renderDetail(client) {
     { label: 'Contact Name', value: client.name,        link: null },
     { label: 'Email',        value: client.email,       link: client.email ? `mailto:${client.email}` : null },
     { label: 'Phone',        value: client.phone,       link: client.phone ? `tel:${client.phone}` : null },
+    { label: 'Area',         value: client.area,        link: null },
     { label: 'Address',      value: client.address,     link: null },
     { label: 'Added',        value: formatDate(client.created_at), link: null },
     { label: 'Updated',      value: formatDate(client.updated_at), link: null },
@@ -264,7 +292,7 @@ function openModal(client = null) {
   nameErr.textContent = '';
 
   // Populate form
-  const fields = ['name','company','email','phone','address','clinic_name','manager','relevant_people','tags','notes'];
+  const fields = ['name','company','email','phone','area','address','clinic_name','manager','relevant_people','tags','notes'];
   fields.forEach(f => {
     const el = form.elements[f];
     if (el) el.value = client ? (client[f] || '') : '';
@@ -306,6 +334,7 @@ async function submitForm(e) {
     company:          '',
     email:            form.elements['email'].value.trim(),
     phone:            form.elements['phone'].value.trim(),
+    area:             form.elements['area'].value.trim(),
     address:          form.elements['address'].value.trim(),
     clinic_name:      form.elements['clinic_name'].value.trim(),
     manager:          form.elements['manager'].value.trim(),

@@ -131,6 +131,19 @@ body {
 .client-list::-webkit-scrollbar-track { background: transparent; }
 .client-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 4px; }
 
+.area-header {
+  padding: 8px 14px 3px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .8px;
+  color: #475569;
+  border-top: 1px solid rgba(255,255,255,.07);
+  margin-top: 4px;
+}
+
+.area-header:first-child { border-top: none; margin-top: 0; }
+
 .list-loading, .list-empty {
   padding: 32px 16px;
   text-align: center;
