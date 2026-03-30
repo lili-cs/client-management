@@ -62,7 +62,11 @@
 
         <div class="detail-body">
           <div class="client-hero">
-            <div class="client-avatar" id="detail-avatar"></div>
+            <div class="client-avatar-wrap" id="detail-avatar-wrap" title="Click to change profile photo">
+              <div class="client-avatar" id="detail-avatar"></div>
+              <div class="avatar-overlay">📷</div>
+              <input type="file" id="profile-photo-input" accept="image/jpeg,image/png,image/gif,image/webp" hidden />
+            </div>
             <div class="client-title">
               <h2 id="detail-name"></h2>
               <p id="detail-company" class="muted"></p>
@@ -119,14 +123,19 @@
       <form id="client-form" class="modal-body" novalidate>
         <div class="form-row">
           <div class="form-group">
-            <label for="f-name">Full Name <span class="req">*</span></label>
-            <input id="f-name" name="name" type="text" required autocomplete="name" />
+            <label for="f-clinic-name">Clinic Name <span class="req">*</span></label>
+            <input id="f-clinic-name" name="clinic_name" type="text" required placeholder="e.g. Downtown Medical Clinic" />
             <span class="field-error" id="name-error"></span>
           </div>
           <div class="form-group">
-            <label for="f-company">Company</label>
-            <input id="f-company" name="company" type="text" autocomplete="organization" />
+            <label for="f-manager">Manager</label>
+            <input id="f-manager" name="manager" type="text" placeholder="e.g. Dr. Sarah Lee" />
           </div>
+        </div>
+
+        <div class="form-group">
+          <label for="f-name">Contact Name <span class="req">*</span></label>
+          <input id="f-name" name="name" type="text" required autocomplete="name" placeholder="Primary contact person" />
         </div>
 
         <div class="form-row">
@@ -143,17 +152,6 @@
         <div class="form-group">
           <label for="f-address">Address</label>
           <input id="f-address" name="address" type="text" autocomplete="street-address" />
-        </div>
-
-        <div class="form-row">
-          <div class="form-group">
-            <label for="f-clinic-name">Clinic Name</label>
-            <input id="f-clinic-name" name="clinic_name" type="text" placeholder="e.g. Downtown Medical Clinic" />
-          </div>
-          <div class="form-group">
-            <label for="f-manager">Manager</label>
-            <input id="f-manager" name="manager" type="text" placeholder="e.g. Dr. Sarah Lee" />
-          </div>
         </div>
 
         <div class="form-group">

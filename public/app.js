@@ -83,11 +83,13 @@ function renderList() {
     <div class="client-card ${c.id === state.selectedId ? 'active' : ''}"
          data-id="${escHtml(c.id)}" role="button" tabindex="0">
       <div class="card-avatar" style="background:${avatarColor(c.name)}">
-        ${escHtml(initials(c.name))}
+        ${c.profile_photo
+          ? `<img src="${photoUrl(c.id, c.profile_photo)}" alt="${escHtml(c.name)}" />`
+          : escHtml(initials(c.name))}
       </div>
       <div class="card-info">
         <div class="card-name">${escHtml(c.name)}</div>
-        <div class="card-sub">${escHtml(c.company || c.email || '—')}</div>
+        <div class="card-sub">${escHtml(c.manager || c.clinic_name || c.email || '—')}</div>
       </div>
       ${c.photo_count > 0
         ? `<span class="card-badge" title="${c.photo_count} photo${c.photo_count !== 1 ? 's' : ''}">📷 ${c.photo_count}</span>`
@@ -115,23 +117,27 @@ function renderDetail(client) {
   emptyState.hidden = true;
   detail.hidden = false;
 
-  // Avatar
+  // Avatar — show profile photo if set, otherwise initials
   const avatar = document.getElementById('detail-avatar');
-  avatar.textContent = initials(client.name);
-  avatar.style.background = avatarColor(client.name);
+  if (client.profile_photo) {
+    avatar.innerHTML = `<img src="${photoUrl(client.id, client.profile_photo)}" alt="${escHtml(client.name)}" />`;
+    avatar.style.background = 'transparent';
+  } else {
+    avatar.innerHTML = escHtml(initials(client.name));
+    avatar.style.background = avatarColor(client.name);
+  }
 
-  document.getElementById('detail-name').textContent = client.name;
-  document.getElementById('detail-company').textContent = client.company || '';
+  document.getElementById('detail-name').textContent = client.clinic_name || client.name;
+  document.getElementById('detail-company').textContent = client.manager || '';
 
   // Info grid
   const infoFields = [
-    { label: 'Email',       value: client.email,       link: client.email ? `mailto:${client.email}` : null },
-    { label: 'Phone',       value: client.phone,       link: client.phone ? `tel:${client.phone}` : null },
-    { label: 'Address',     value: client.address,     link: null },
-    { label: 'Clinic Name', value: client.clinic_name, link: null },
-    { label: 'Manager',     value: client.manager,     link: null },
-    { label: 'Added',       value: formatDate(client.created_at), link: null },
-    { label: 'Updated',     value: formatDate(client.updated_at), link: null },
+    { label: 'Contact Name', value: client.name,        link: null },
+    { label: 'Email',        value: client.email,       link: client.email ? `mailto:${client.email}` : null },
+    { label: 'Phone',        value: client.phone,       link: client.phone ? `tel:${client.phone}` : null },
+    { label: 'Address',      value: client.address,     link: null },
+    { label: 'Added',        value: formatDate(client.created_at), link: null },
+    { label: 'Updated',      value: formatDate(client.updated_at), link: null },
   ].filter(f => f.value);
 
   document.getElementById('detail-info').innerHTML = infoFields.map(f => `
@@ -282,18 +288,22 @@ async function submitForm(e) {
 
   nameErr.textContent = '';
   nameEl.classList.remove('error');
+  const clinicEl = form.elements['clinic_name'];
+  clinicEl.classList.remove('error');
 
-  const name = nameEl.value.trim();
-  if (!name) {
-    nameEl.classList.add('error');
-    nameErr.textContent = 'Name is required.';
-    nameEl.focus();
+  const clinic_name = clinicEl.value.trim();
+  if (!clinic_name) {
+    clinicEl.classList.add('error');
+    nameErr.textContent = 'Clinic Name is required.';
+    clinicEl.focus();
     return;
   }
 
+  const name = nameEl.value.trim() || clinic_name; // fallback to clinic name if contact blank
+
   const payload = {
     name,
-    company:          form.elements['company'].value.trim(),
+    company:          '',
     email:            form.elements['email'].value.trim(),
     phone:            form.elements['phone'].value.trim(),
     address:          form.elements['address'].value.trim(),
@@ -394,6 +404,31 @@ async function uploadPhoto(file) {
     toast(err.message, 'error');
   } finally {
     placeholder.remove();
+  }
+}
+
+async function uploadProfilePhoto(file) {
+  if (!state.selectedId) return;
+  const wrap = document.getElementById('detail-avatar-wrap');
+  wrap.style.opacity = '0.5';
+  wrap.style.pointerEvents = 'none';
+
+  const formData = new FormData();
+  formData.append('photo', file);
+
+  try {
+    const res = await fetch(`/api/clients/${state.selectedId}/profile-photo`, { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    state.selectedDetail = { ...state.selectedDetail, ...data };
+    renderDetail(state.selectedDetail);
+    await loadClients(document.getElementById('search-input').value.trim());
+    toast('Profile photo updated.', 'success');
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    wrap.style.opacity = '';
+    wrap.style.pointerEvents = '';
   }
 }
 
@@ -534,6 +569,14 @@ function bindEvents() {
   document.getElementById('client-form').addEventListener('submit', submitForm);
   document.getElementById('modal-overlay').addEventListener('click', e => {
     if (e.target === e.currentTarget) closeModal();
+  });
+
+  // Profile photo upload
+  const profilePhotoInput = document.getElementById('profile-photo-input');
+  document.getElementById('detail-avatar-wrap').addEventListener('click', () => profilePhotoInput.click());
+  profilePhotoInput.addEventListener('change', () => {
+    const file = profilePhotoInput.files[0];
+    if (file) { uploadProfilePhoto(file); profilePhotoInput.value = ''; }
   });
 
   // Photo upload

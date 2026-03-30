@@ -63,19 +63,21 @@ async function initDb() {
 
   await db.execute(`
     CREATE TABLE IF NOT EXISTS clients (
-      id               TEXT PRIMARY KEY,
-      name             TEXT NOT NULL,
-      company          TEXT DEFAULT '',
-      email            TEXT DEFAULT '',
-      phone            TEXT DEFAULT '',
-      address          TEXT DEFAULT '',
-      clinic_name      TEXT DEFAULT '',
-      manager          TEXT DEFAULT '',
-      relevant_people  TEXT DEFAULT '',
-      notes            TEXT DEFAULT '',
-      tags             TEXT DEFAULT '',
-      created_at       TEXT DEFAULT (datetime('now')),
-      updated_at       TEXT DEFAULT (datetime('now'))
+      id                    TEXT PRIMARY KEY,
+      name                  TEXT NOT NULL,
+      company               TEXT DEFAULT '',
+      email                 TEXT DEFAULT '',
+      phone                 TEXT DEFAULT '',
+      address               TEXT DEFAULT '',
+      clinic_name           TEXT DEFAULT '',
+      manager               TEXT DEFAULT '',
+      relevant_people       TEXT DEFAULT '',
+      notes                 TEXT DEFAULT '',
+      tags                  TEXT DEFAULT '',
+      profile_photo         TEXT DEFAULT '',
+      profile_photo_drive   TEXT DEFAULT '',
+      created_at            TEXT DEFAULT (datetime('now')),
+      updated_at            TEXT DEFAULT (datetime('now'))
     )
   `);
 
@@ -95,6 +97,8 @@ async function initDb() {
   try { await db.execute("ALTER TABLE clients ADD COLUMN clinic_name TEXT DEFAULT ''"); } catch {}
   try { await db.execute("ALTER TABLE clients ADD COLUMN manager TEXT DEFAULT ''"); } catch {}
   try { await db.execute("ALTER TABLE clients ADD COLUMN relevant_people TEXT DEFAULT ''"); } catch {}
+  try { await db.execute("ALTER TABLE clients ADD COLUMN profile_photo TEXT DEFAULT ''"); } catch {}
+  try { await db.execute("ALTER TABLE clients ADD COLUMN profile_photo_drive TEXT DEFAULT ''"); } catch {}
 }
 
 // Lazy init — runs once, reused across warm Vercel invocations
@@ -357,6 +361,72 @@ app.delete('/api/clients/:id/photos/:photoId', async (req, res) => {
     }
 
     await db.execute({ sql: 'DELETE FROM client_photos WHERE id = ?', args: [req.params.photoId] });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Routes: profile photo ─────────────────────────────────────────────────────
+
+app.post('/api/clients/:id/profile-photo', (req, res) => {
+  upload.single('photo')(req, res, async err => {
+    if (err) return res.status(400).json({ error: err.message });
+    if (!req.file) return res.status(400).json({ error: 'No file provided' });
+
+    const ex = await db.execute({ sql: 'SELECT * FROM clients WHERE id = ?', args: [req.params.id] });
+    const client = row(ex.rows[0]);
+    if (!client) return res.status(404).json({ error: 'Client not found' });
+
+    // Delete old profile photo if it exists
+    if (R2_ENABLED && client.profile_photo_drive) {
+      try { await r2.send(new DeleteObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: client.profile_photo_drive })); } catch {}
+    } else if (!R2_ENABLED && client.profile_photo) {
+      const old = path.join(UPLOADS_DIR, req.params.id, client.profile_photo);
+      if (fs.existsSync(old)) fs.unlinkSync(old);
+    }
+
+    let filename, drivePath;
+
+    if (R2_ENABLED) {
+      filename  = `profile-${uuidv4()}${path.extname(req.file.originalname).toLowerCase()}`;
+      drivePath = `photos/${req.params.id}/${filename}`;
+      try {
+        await r2.send(new PutObjectCommand({
+          Bucket: process.env.R2_BUCKET_NAME,
+          Key: drivePath, Body: req.file.buffer, ContentType: req.file.mimetype,
+        }));
+      } catch (e) { return res.status(500).json({ error: 'Failed to upload to R2: ' + e.message }); }
+    } else {
+      filename  = req.file.filename;
+      drivePath = null;
+    }
+
+    await db.execute({
+      sql: `UPDATE clients SET profile_photo=?, profile_photo_drive=?, updated_at=datetime('now') WHERE id=?`,
+      args: [filename, drivePath || '', req.params.id],
+    });
+
+    const updated = await db.execute({ sql: 'SELECT * FROM clients WHERE id = ?', args: [req.params.id] });
+    res.json(row(updated.rows[0]));
+  });
+});
+
+app.delete('/api/clients/:id/profile-photo', async (req, res) => {
+  try {
+    const ex = await db.execute({ sql: 'SELECT * FROM clients WHERE id = ?', args: [req.params.id] });
+    const client = row(ex.rows[0]);
+    if (!client) return res.status(404).json({ error: 'Client not found' });
+
+    if (R2_ENABLED && client.profile_photo_drive) {
+      try { await r2.send(new DeleteObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: client.profile_photo_drive })); } catch {}
+    } else if (!R2_ENABLED && client.profile_photo) {
+      const fp = path.join(UPLOADS_DIR, req.params.id, client.profile_photo);
+      if (fs.existsSync(fp)) fs.unlinkSync(fp);
+    }
+
+    await db.execute({
+      sql: `UPDATE clients SET profile_photo='', profile_photo_drive='', updated_at=datetime('now') WHERE id=?`,
+      args: [req.params.id],
+    });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
