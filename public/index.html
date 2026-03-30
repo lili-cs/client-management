@@ -175,6 +175,16 @@
           <textarea id="f-notes" name="notes" rows="4" placeholder="Meeting notes, preferences, follow-ups…"></textarea>
         </div>
 
+        <div class="form-group" id="modal-photos-group">
+          <label>Photos <span class="hint">(up to 10 · optional)</span></label>
+          <div class="modal-photo-drop" id="modal-photo-drop">
+            <input type="file" id="modal-photo-input" accept="image/jpeg,image/png,image/gif,image/webp" multiple hidden />
+            <span class="upload-icon" style="font-size:20px">⬆</span>
+            <span>Drop images here or <button type="button" class="link-btn" id="modal-browse-btn">browse</button></span>
+          </div>
+          <div class="modal-photo-previews" id="modal-photo-previews"></div>
+        </div>
+
         <div class="modal-footer">
           <button type="button" class="btn btn-ghost" id="cancel-btn">Cancel</button>
           <button type="submit" class="btn btn-primary" id="save-btn">Save Client</button>

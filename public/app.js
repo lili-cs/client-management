@@ -10,6 +10,7 @@ const state = {
   selectedDetail: null,   // full client object with photos
   lightboxPhotos: [],
   lightboxIndex: 0,
+  modalStagedFiles: [],   // files queued in the new-client modal
 };
 
 // ── API helpers ───────────────────────────────────────────────────────────────
@@ -299,8 +300,40 @@ function openModal(client = null) {
   });
 
   form.dataset.clientId = client ? client.id : '';
+
+  // Reset staged photos (only shown for new clients)
+  state.modalStagedFiles = [];
+  renderModalPreviews();
+  const photosGroup = document.getElementById('modal-photos-group');
+  if (photosGroup) photosGroup.hidden = !!client; // hide photo section when editing
+
   overlay.hidden = false;
-  form.elements['name'].focus();
+  form.elements['clinic_name'].focus();
+}
+
+function renderModalPreviews() {
+  const container = document.getElementById('modal-photo-previews');
+  if (!container) return;
+  container.innerHTML = state.modalStagedFiles.map((f, i) => `
+    <div class="modal-preview-item">
+      <img src="${escHtml(URL.createObjectURL(f))}" alt="${escHtml(f.name)}" />
+      <button type="button" class="modal-preview-remove" data-index="${i}" title="Remove">✕</button>
+    </div>`).join('');
+
+  container.querySelectorAll('.modal-preview-remove').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.modalStagedFiles.splice(Number(btn.dataset.index), 1);
+      renderModalPreviews();
+    });
+  });
+}
+
+function stageModalFiles(files) {
+  const remaining = 10 - state.modalStagedFiles.length;
+  const toAdd = [...files].filter(f => /^image\//.test(f.type)).slice(0, remaining);
+  state.modalStagedFiles.push(...toAdd);
+  if (toAdd.length < files.length) toast(`Only ${10} photos allowed per client.`, 'warning');
+  renderModalPreviews();
 }
 
 function closeModal() {
@@ -351,10 +384,25 @@ async function submitForm(e) {
     let result;
     if (clientId) {
       result = await api('PUT', `/api/clients/${clientId}`, payload);
-      toast(`${result.name} updated.`, 'success');
+      toast(`${result.clinic_name || result.name} updated.`, 'success');
     } else {
       result = await api('POST', '/api/clients', payload);
-      toast(`${result.name} added.`, 'success');
+
+      // Upload any staged photos
+      if (state.modalStagedFiles.length) {
+        saveBtn.textContent = `Uploading photos…`;
+        for (const file of state.modalStagedFiles) {
+          const fd = new FormData();
+          fd.append('photo', file);
+          try {
+            const r = await fetch(`/api/clients/${result.id}/photos`, { method: 'POST', body: fd });
+            if (!r.ok) { const d = await r.json(); throw new Error(d.error); }
+          } catch (e) { toast('Photo upload failed: ' + e.message, 'error'); }
+        }
+        state.modalStagedFiles = [];
+      }
+
+      toast(`${result.clinic_name || result.name} added.`, 'success');
     }
 
     closeModal();
@@ -598,6 +646,26 @@ function bindEvents() {
   document.getElementById('client-form').addEventListener('submit', submitForm);
   document.getElementById('modal-overlay').addEventListener('click', e => {
     if (e.target === e.currentTarget) closeModal();
+  });
+
+  // Modal photo staging (new client)
+  const modalPhotoInput = document.getElementById('modal-photo-input');
+  const modalPhotoDrop  = document.getElementById('modal-photo-drop');
+
+  document.getElementById('modal-browse-btn').addEventListener('click', () => modalPhotoInput.click());
+  modalPhotoInput.addEventListener('change', () => {
+    stageModalFiles(modalPhotoInput.files);
+    modalPhotoInput.value = '';
+  });
+  modalPhotoDrop.addEventListener('click', e => {
+    if (!e.target.classList.contains('link-btn')) modalPhotoInput.click();
+  });
+  modalPhotoDrop.addEventListener('dragover', e => { e.preventDefault(); modalPhotoDrop.classList.add('drag-over'); });
+  modalPhotoDrop.addEventListener('dragleave', () => modalPhotoDrop.classList.remove('drag-over'));
+  modalPhotoDrop.addEventListener('drop', e => {
+    e.preventDefault();
+    modalPhotoDrop.classList.remove('drag-over');
+    stageModalFiles(e.dataTransfer.files);
   });
 
   // Profile photo upload
