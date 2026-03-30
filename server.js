@@ -46,6 +46,8 @@ async function initDb() {
       profile_photo         TEXT DEFAULT '',
       profile_photo_drive   TEXT DEFAULT '',
       area                  TEXT DEFAULT '',
+      area_state            TEXT DEFAULT '',
+      area_country          TEXT DEFAULT '',
       created_at            TEXT DEFAULT (datetime('now')),
       updated_at            TEXT DEFAULT (datetime('now'))
     )
@@ -83,6 +85,8 @@ async function initDb() {
   try { await db.execute("ALTER TABLE clients ADD COLUMN profile_photo TEXT DEFAULT ''"); } catch {}
   try { await db.execute("ALTER TABLE clients ADD COLUMN profile_photo_drive TEXT DEFAULT ''"); } catch {}
   try { await db.execute("ALTER TABLE clients ADD COLUMN area TEXT DEFAULT ''"); } catch {}
+  try { await db.execute("ALTER TABLE clients ADD COLUMN area_state TEXT DEFAULT ''"); } catch {}
+  try { await db.execute("ALTER TABLE clients ADD COLUMN area_country TEXT DEFAULT ''"); } catch {}
 }
 
 // Lazy init — runs once, reused across warm Vercel invocations
@@ -241,13 +245,14 @@ app.get('/api/clients', async (req, res) => {
                WHERE v2.client_id = c.id ORDER BY v2.visited_at DESC LIMIT 1) AS next_followup_date
             FROM clients c
             LEFT JOIN client_photos p ON p.client_id = c.id
-            WHERE c.name  LIKE ? OR c.company     LIKE ?
-               OR c.email LIKE ? OR c.phone       LIKE ?
-               OR c.tags  LIKE ? OR c.area        LIKE ?
+            WHERE c.name  LIKE ? OR c.company      LIKE ?
+               OR c.email LIKE ? OR c.phone        LIKE ?
+               OR c.tags  LIKE ? OR c.area         LIKE ?
                OR c.address LIKE ? OR c.clinic_name LIKE ?
-               OR c.manager LIKE ?
-            GROUP BY c.id ORDER BY c.area ASC, c.clinic_name ASC`,
-      args: [like, like, like, like, like, like, like, like, like],
+               OR c.manager LIKE ? OR c.area_state  LIKE ?
+               OR c.area_country LIKE ?
+            GROUP BY c.id ORDER BY c.area_country ASC, c.area_state ASC, c.area ASC, c.clinic_name ASC`,
+      args: [like, like, like, like, like, like, like, like, like, like, like],
     });
     res.json(rows(result.rows));
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -269,14 +274,14 @@ app.get('/api/clients/:id', async (req, res) => {
 
 app.post('/api/clients', async (req, res) => {
   try {
-    const { name, company, email, phone, address, area, clinic_name, manager, relevant_people, notes, tags } = req.body;
+    const { name, company, email, phone, address, area, area_state, area_country, clinic_name, manager, relevant_people, notes, tags } = req.body;
     if (!name?.trim()) return res.status(400).json({ error: 'Name is required' });
 
     const id = uuidv4();
     await db.execute({
-      sql: `INSERT INTO clients (id, name, company, email, phone, address, area, clinic_name, manager, relevant_people, notes, tags)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [id, name.trim(), company||'', email||'', phone||'', address||'', area||'', clinic_name||'', manager||'', relevant_people||'', notes||'', tags||''],
+      sql: `INSERT INTO clients (id, name, company, email, phone, address, area, area_state, area_country, clinic_name, manager, relevant_people, notes, tags)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [id, name.trim(), company||'', email||'', phone||'', address||'', area||'', area_state||'', area_country||'', clinic_name||'', manager||'', relevant_people||'', notes||'', tags||''],
     });
     const r = await db.execute({ sql: 'SELECT * FROM clients WHERE id = ?', args: [id] });
     res.status(201).json(row(r.rows[0]));
@@ -285,17 +290,17 @@ app.post('/api/clients', async (req, res) => {
 
 app.put('/api/clients/:id', async (req, res) => {
   try {
-    const { name, company, email, phone, address, area, clinic_name, manager, relevant_people, notes, tags } = req.body;
+    const { name, company, email, phone, address, area, area_state, area_country, clinic_name, manager, relevant_people, notes, tags } = req.body;
     if (!name?.trim()) return res.status(400).json({ error: 'Name is required' });
 
     const ex = await db.execute({ sql: 'SELECT id FROM clients WHERE id = ?', args: [req.params.id] });
     if (!ex.rows[0]) return res.status(404).json({ error: 'Client not found' });
 
     await db.execute({
-      sql: `UPDATE clients SET name=?, company=?, email=?, phone=?, address=?, area=?,
+      sql: `UPDATE clients SET name=?, company=?, email=?, phone=?, address=?, area=?, area_state=?, area_country=?,
             clinic_name=?, manager=?, relevant_people=?, notes=?, tags=?,
             updated_at=datetime('now') WHERE id=?`,
-      args: [name.trim(), company||'', email||'', phone||'', address||'', area||'', clinic_name||'', manager||'', relevant_people||'', notes||'', tags||'', req.params.id],
+      args: [name.trim(), company||'', email||'', phone||'', address||'', area||'', area_state||'', area_country||'', clinic_name||'', manager||'', relevant_people||'', notes||'', tags||'', req.params.id],
     });
     const r = await db.execute({ sql: 'SELECT * FROM clients WHERE id = ?', args: [req.params.id] });
     res.json(row(r.rows[0]));

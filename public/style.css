@@ -144,6 +144,16 @@ body {
 
 .area-header:first-child { border-top: none; margin-top: 0; }
 
+/* Township sub-header within a state group */
+.township-header {
+  padding: 5px 14px 2px 22px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .4px;
+  color: #64748b;
+  text-transform: none;
+}
+
 .list-loading, .list-empty {
   padding: 32px 16px;
   text-align: center;

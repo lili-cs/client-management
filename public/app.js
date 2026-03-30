@@ -45,7 +45,11 @@ async function geocodeAddress(address) {
     const data = await res.json();
     if (!data.length) return null;
     const a = data[0].address;
-    return a.city || a.town || a.village || a.suburb || a.municipality || a.county || null;
+    return {
+      township: a.suburb || a.city_district || a.city || a.town || a.village || a.municipality || a.county || '',
+      state:    a.state || a.region || a.state_district || '',
+      country:  a.country || '',
+    };
   } catch {
     return null;
   }
@@ -149,7 +153,7 @@ function clientCardHtml(c) {
       </div>
       <div class="card-info">
         <div class="card-name">${escHtml(c.clinic_name || c.name)}</div>
-        <div class="card-sub">${escHtml(c.manager || c.email || '—')}</div>
+        <div class="card-sub">${escHtml(c.area || c.manager || c.email || '—')}</div>
       </div>
       ${dotClass ? `<span class="card-followup-dot ${dotClass}" title="${escHtml(dotTitle)}"></span>` : ''}
       ${c.photo_count > 0
@@ -166,29 +170,63 @@ function renderList() {
     return;
   }
 
-  // Group by area (clients already sorted area ASC, clinic_name ASC from server)
-  const NO_AREA = '__none__';
-  const groups  = new Map();
+  const NO_KEY = '__none__';
 
+  // Detect multi-country to decide whether to include country in group label
+  const uniqueCountries = new Set(
+    state.clients.map(c => (c.area_country || '').trim()).filter(Boolean)
+  );
+  const multiCountry = uniqueCountries.size > 1;
+
+  // Primary groups: by state (and country if multi-country)
+  const stateGroups = new Map(); // groupKey → { label, clients[] }
   for (const c of state.clients) {
-    const key = (c.area || '').trim() || NO_AREA;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(c);
+    const country = (c.area_country || '').trim();
+    const st      = (c.area_state  || '').trim();
+    let key, label;
+    if (!country && !st) {
+      key = NO_KEY; label = 'No Area';
+    } else if (multiCountry) {
+      key = [country, st].filter(Boolean).join(' · ');
+      label = key;
+    } else {
+      key   = st || country;
+      label = st || country;
+    }
+    if (!stateGroups.has(key)) stateGroups.set(key, { label, clients: [] });
+    stateGroups.get(key).clients.push(c);
   }
 
-  // Named areas first (alphabetical), then no-area group last
-  const namedAreas = [...groups.keys()].filter(k => k !== NO_AREA).sort((a, b) => a.localeCompare(b));
-  const hasNamed   = namedAreas.length > 0;
-  const sortedKeys = hasNamed ? [...namedAreas, ...(groups.has(NO_AREA) ? [NO_AREA] : [])] : [NO_AREA];
+  const namedStateKeys = [...stateGroups.keys()].filter(k => k !== NO_KEY)
+    .sort((a, b) => a.localeCompare(b));
+  const sortedStateKeys = [...namedStateKeys, ...(stateGroups.has(NO_KEY) ? [NO_KEY] : [])];
+  const multiState = sortedStateKeys.length > 1;
 
   let html = '';
-  for (const key of sortedKeys) {
-    // Only show area header when there are multiple groups
-    if (sortedKeys.length > 1 || hasNamed) {
-      const label = key === NO_AREA ? 'No Area' : key;
-      html += `<div class="area-header">${escHtml(label)}</div>`;
+  for (const stateKey of sortedStateKeys) {
+    const { label: stateLabel, clients } = stateGroups.get(stateKey);
+
+    if (multiState) {
+      html += `<div class="area-header">${escHtml(stateLabel)}</div>`;
     }
-    html += groups.get(key).map(clientCardHtml).join('');
+
+    // Secondary groups: by township within each state
+    const townGroups = new Map();
+    for (const c of clients) {
+      const t = (c.area || '').trim() || NO_KEY;
+      if (!townGroups.has(t)) townGroups.set(t, []);
+      townGroups.get(t).push(c);
+    }
+
+    const namedTowns = [...townGroups.keys()].filter(k => k !== NO_KEY);
+    const multiTown  = namedTowns.length > 1 || (namedTowns.length > 0 && townGroups.has(NO_KEY));
+
+    for (const [town, tClients] of townGroups) {
+      if (multiTown && town !== NO_KEY) {
+        html += `<div class="township-header">${escHtml(town)}</div>`;
+      }
+      html += tClients.map(clientCardHtml).join('');
+    }
   }
 
   list.innerHTML = html;
@@ -231,7 +269,9 @@ function renderDetail(client) {
     { label: 'Contact Name', value: client.name,        link: null },
     { label: 'Email',        value: client.email,       link: client.email ? `mailto:${client.email}` : null },
     { label: 'Phone',        value: client.phone,       link: client.phone ? `tel:${client.phone}` : null },
-    { label: 'Area',         value: client.area,        link: null },
+    { label: 'Township',      value: client.area,         link: null },
+    { label: 'State',         value: client.area_state,   link: null },
+    { label: 'Country',       value: client.area_country, link: null },
     { label: 'Address',      value: client.address,     link: null },
     { label: 'Added',        value: formatDate(client.created_at), link: null },
     { label: 'Updated',      value: formatDate(client.updated_at), link: null },
@@ -509,14 +549,16 @@ async function submitForm(e) {
   saveBtn.disabled = true;
   saveBtn.textContent = 'Detecting area…';
 
-  const area = await geocodeAddress(address);
+  const geo = await geocodeAddress(address);
 
   const payload = {
     name,
     company:          '',
     email:            form.elements['email'].value.trim(),
     phone:            form.elements['phone'].value.trim(),
-    area:             area || '',
+    area:             geo ? geo.township : '',
+    area_state:       geo ? geo.state    : '',
+    area_country:     geo ? geo.country  : '',
     address,
     clinic_name:      form.elements['clinic_name'].value.trim(),
     manager:          form.elements['manager'].value.trim(),
