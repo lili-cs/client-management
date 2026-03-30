@@ -6,20 +6,35 @@ const path = require('path');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 
-// ── Deta Drive setup (optional) ──────────────────────────────────────────────
-const DETA_ENABLED = !!process.env.DETA_PROJECT_KEY;
+// ── Cloudflare R2 setup (optional) ───────────────────────────────────────────
+const R2_ENABLED = !!(
+  process.env.R2_ACCOUNT_ID &&
+  process.env.R2_ACCESS_KEY_ID &&
+  process.env.R2_SECRET_ACCESS_KEY &&
+  process.env.R2_BUCKET_NAME
+);
 
-let photoDrive = null;
-let backupDrive = null;
+let r2 = null;
+let PutObjectCommand, GetObjectCommand, DeleteObjectCommand, DeleteObjectsCommand;
 
-if (DETA_ENABLED) {
-  const { Deta } = require('deta');
-  const deta = Deta(process.env.DETA_PROJECT_KEY);
-  photoDrive  = deta.Drive('client-photos');
-  backupDrive = deta.Drive('client-backups');
+if (R2_ENABLED) {
+  const sdk = require('@aws-sdk/client-s3');
+  PutObjectCommand    = sdk.PutObjectCommand;
+  GetObjectCommand    = sdk.GetObjectCommand;
+  DeleteObjectCommand = sdk.DeleteObjectCommand;
+  DeleteObjectsCommand = sdk.DeleteObjectsCommand;
+
+  r2 = new sdk.S3Client({
+    region: 'auto',
+    endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+    credentials: {
+      accessKeyId: process.env.R2_ACCESS_KEY_ID,
+      secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+    },
+  });
 }
 
-// ── Directory setup (used in local-storage fallback) ─────────────────────────
+// ── Directory setup (local fallback) ─────────────────────────────────────────
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
 const DB_DIR      = path.join(__dirname, 'db');
 const BACKUP_DIR  = path.join(__dirname, 'backups');
@@ -57,13 +72,13 @@ db.exec(`
   );
 `);
 
-// Migrate: add drive_path column if upgrading from old schema
+// Migrate: add drive_path if upgrading from original schema
 try { db.exec('ALTER TABLE client_photos ADD COLUMN drive_path TEXT'); } catch {}
 
 // ── Multer ───────────────────────────────────────────────────────────────────
-// Memory storage when Deta is enabled (buffer → Drive).
-// Disk storage as fallback (buffer → local uploads/).
-const multerStorage = DETA_ENABLED
+// Memory storage when R2 is enabled (upload buffer → R2).
+// Disk storage as fallback (save to ./uploads/).
+const multerStorage = R2_ENABLED
   ? multer.memoryStorage()
   : multer.diskStorage({
       destination(req, _file, cb) {
@@ -90,18 +105,12 @@ const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Local photo serving (fallback when Deta not configured)
-if (!DETA_ENABLED) {
-  app.use('/uploads', express.static(UPLOADS_DIR));
-}
-
-// ── Photo proxy endpoint ─────────────────────────────────────────────────────
-// Always used as the canonical photo URL so the frontend never changes.
-// Streams from Deta Drive when enabled, falls back to local disk.
+// ── Photo proxy endpoint ──────────────────────────────────────────────────────
+// Single URL scheme for both R2 and local — frontend never changes.
+// R2: streams directly from bucket. Local: serves from disk.
 app.get('/api/photos/:clientId/:filename', async (req, res) => {
   const { clientId, filename } = req.params;
 
-  // Basic path traversal guard
   if (!/^[\w-]+$/.test(clientId) || !/^[\w\-.]+$/.test(filename)) {
     return res.status(400).end();
   }
@@ -109,19 +118,21 @@ app.get('/api/photos/:clientId/:filename', async (req, res) => {
   const ext = path.extname(filename).toLowerCase();
   const contentTypes = {
     '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-    '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp',
+    '.png': 'image/png',  '.gif': 'image/gif',  '.webp': 'image/webp',
   };
-  const contentType = contentTypes[ext] || 'image/jpeg';
 
-  if (DETA_ENABLED) {
+  if (R2_ENABLED) {
     try {
-      const blob = await photoDrive.get(`${clientId}/${filename}`);
-      if (!blob) return res.status(404).end();
-      res.setHeader('Content-Type', contentType);
+      const obj = await r2.send(new GetObjectCommand({
+        Bucket: process.env.R2_BUCKET_NAME,
+        Key: `photos/${clientId}/${filename}`,
+      }));
+      res.setHeader('Content-Type', obj.ContentType || contentTypes[ext] || 'image/jpeg');
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-      res.end(Buffer.from(await blob.arrayBuffer()));
-    } catch {
-      res.status(500).end();
+      obj.Body.pipe(res); // stream directly — no buffering
+    } catch (err) {
+      if (err.name === 'NoSuchKey') res.status(404).end();
+      else { console.error('R2 get:', err.message); res.status(500).end(); }
     }
   } else {
     const filePath = path.join(UPLOADS_DIR, clientId, filename);
@@ -136,10 +147,15 @@ async function saveBackup(payload) {
   const ts      = new Date().toISOString().replace(/[:.]/g, '-');
   const content = JSON.stringify(payload, null, 2);
 
-  if (DETA_ENABLED) {
-    const name = `clients-${ts}.json`;
-    await backupDrive.put(name, { data: content, contentType: 'application/json' });
-    return { type: 'deta-drive', location: name };
+  if (R2_ENABLED) {
+    const key = `backups/clients-${ts}.json`;
+    await r2.send(new PutObjectCommand({
+      Bucket: process.env.R2_BUCKET_NAME,
+      Key: key,
+      Body: content,
+      ContentType: 'application/json',
+    }));
+    return { type: 'r2', location: key };
   } else {
     const filePath = path.join(BACKUP_DIR, `clients-${ts}.json`);
     fs.writeFileSync(filePath, content, 'utf8');
@@ -147,7 +163,7 @@ async function saveBackup(payload) {
   }
 }
 
-// ── Routes: clients ──────────────────────────────────────────────────────────
+// ── Routes: clients ───────────────────────────────────────────────────────────
 
 app.get('/api/clients', (req, res) => {
   const like = `%${(req.query.search || '').trim()}%`;
@@ -213,10 +229,17 @@ app.delete('/api/clients/:id', async (req, res) => {
 
   const photos = db.prepare('SELECT * FROM client_photos WHERE client_id = ?').all(req.params.id);
 
-  if (DETA_ENABLED) {
-    const paths = photos.map(p => p.drive_path).filter(Boolean);
-    if (paths.length) {
-      try { await photoDrive.deleteMany(paths); } catch (e) { console.error('Drive deleteMany:', e.message); }
+  if (R2_ENABLED && photos.length) {
+    const objects = photos
+      .filter(p => p.drive_path)
+      .map(p => ({ Key: p.drive_path }));
+    if (objects.length) {
+      try {
+        await r2.send(new DeleteObjectsCommand({
+          Bucket: process.env.R2_BUCKET_NAME,
+          Delete: { Objects: objects },
+        }));
+      } catch (e) { console.error('R2 deleteObjects:', e.message); }
     }
   } else {
     const clientDir = path.join(UPLOADS_DIR, req.params.id);
@@ -227,7 +250,7 @@ app.delete('/api/clients/:id', async (req, res) => {
   res.json({ success: true });
 });
 
-// ── Routes: photos ───────────────────────────────────────────────────────────
+// ── Routes: photos ────────────────────────────────────────────────────────────
 
 app.post('/api/clients/:id/photos', (req, res) => {
   if (!db.prepare('SELECT id FROM clients WHERE id = ?').get(req.params.id)) {
@@ -256,13 +279,18 @@ app.post('/api/clients/:id/photos', (req, res) => {
 
     let filename, drivePath;
 
-    if (DETA_ENABLED) {
+    if (R2_ENABLED) {
       filename  = `${uuidv4()}${path.extname(req.file.originalname).toLowerCase()}`;
-      drivePath = `${req.params.id}/${filename}`;
+      drivePath = `photos/${req.params.id}/${filename}`;
       try {
-        await photoDrive.put(drivePath, { data: req.file.buffer, contentType: req.file.mimetype });
+        await r2.send(new PutObjectCommand({
+          Bucket: process.env.R2_BUCKET_NAME,
+          Key: drivePath,
+          Body: req.file.buffer,
+          ContentType: req.file.mimetype,
+        }));
       } catch (e) {
-        return res.status(500).json({ error: 'Failed to upload photo to Deta Drive: ' + e.message });
+        return res.status(500).json({ error: 'Failed to upload to R2: ' + e.message });
       }
     } else {
       filename  = req.file.filename;
@@ -285,11 +313,14 @@ app.delete('/api/clients/:id/photos/:photoId', async (req, res) => {
     .get(req.params.photoId, req.params.id);
   if (!photo) return res.status(404).json({ error: 'Photo not found' });
 
-  if (DETA_ENABLED) {
-    if (photo.drive_path) {
-      try { await photoDrive.delete(photo.drive_path); } catch (e) { console.error('Drive delete:', e.message); }
-    }
-  } else {
+  if (R2_ENABLED && photo.drive_path) {
+    try {
+      await r2.send(new DeleteObjectCommand({
+        Bucket: process.env.R2_BUCKET_NAME,
+        Key: photo.drive_path,
+      }));
+    } catch (e) { console.error('R2 delete:', e.message); }
+  } else if (!R2_ENABLED) {
     const filePath = path.join(UPLOADS_DIR, req.params.id, photo.filename);
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
   }
@@ -298,7 +329,7 @@ app.delete('/api/clients/:id/photos/:photoId', async (req, res) => {
   res.json({ success: true });
 });
 
-// ── Routes: backup & info ────────────────────────────────────────────────────
+// ── Routes: backup & info ─────────────────────────────────────────────────────
 
 app.post('/api/backup', async (req, res) => {
   try {
@@ -322,14 +353,15 @@ app.post('/api/backup', async (req, res) => {
 
 app.get('/api/info', (_req, res) => {
   res.json({
-    detaEnabled: DETA_ENABLED,
-    storageType: DETA_ENABLED ? 'deta-drive' : 'local',
+    r2Enabled: R2_ENABLED,
+    storageType: R2_ENABLED ? 'cloudflare-r2' : 'local',
+    bucket: R2_ENABLED ? process.env.R2_BUCKET_NAME : null,
   });
 });
 
-// ── Start ────────────────────────────────────────────────────────────────────
+// ── Start ─────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`\n  Sales Support CRM  →  http://localhost:${PORT}`);
-  console.log(`  Photo/backup storage: ${DETA_ENABLED ? 'Deta Drive' : 'local (./uploads/ + ./backups/)'}\n`);
+  console.log(`  Photo/backup storage: ${R2_ENABLED ? `Cloudflare R2 (${process.env.R2_BUCKET_NAME})` : 'local (./uploads/ + ./backups/)'}\n`);
 });

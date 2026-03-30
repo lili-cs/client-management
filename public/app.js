@@ -451,12 +451,12 @@ async function loadStorageInfo() {
   try {
     const info = await api('GET', '/api/info');
     const badge = document.getElementById('storage-badge');
-    if (info.detaEnabled) {
-      badge.textContent = 'Deta Drive';
-      badge.title = 'Photos and backups stored on Deta Drive (cloud)';
+    if (info.r2Enabled) {
+      badge.textContent = `R2: ${info.bucket}`;
+      badge.title = `Photos and backups stored on Cloudflare R2 bucket: ${info.bucket}`;
     } else {
       badge.textContent = 'Local storage';
-      badge.title = 'Photos and backups saved locally — add DETA_PROJECT_KEY to .env for cloud storage';
+      badge.title = 'Photos and backups saved locally — add R2 credentials to .env for cloud storage';
     }
   } catch {}
 }
