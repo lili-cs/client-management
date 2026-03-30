@@ -67,7 +67,7 @@ function formatDate(iso) {
 }
 
 function photoUrl(clientId, filename) {
-  return `/uploads/${clientId}/${filename}`;
+  return `/api/photos/${clientId}/${filename}`;
 }
 
 // ── Render: client list ───────────────────────────────────────────────────────
@@ -451,12 +451,12 @@ async function loadStorageInfo() {
   try {
     const info = await api('GET', '/api/info');
     const badge = document.getElementById('storage-badge');
-    if (info.s3Enabled) {
-      badge.textContent = `S3: ${info.bucket}`;
-      badge.title = `AWS S3 bucket: ${info.bucket} (${info.region})`;
+    if (info.detaEnabled) {
+      badge.textContent = 'Deta Drive';
+      badge.title = 'Photos and backups stored on Deta Drive (cloud)';
     } else {
-      badge.textContent = 'Local backups';
-      badge.title = 'Backups saved to ./backups/ — configure AWS S3 in .env for cloud storage';
+      badge.textContent = 'Local storage';
+      badge.title = 'Photos and backups saved locally — add DETA_PROJECT_KEY to .env for cloud storage';
     }
   } catch {}
 }
