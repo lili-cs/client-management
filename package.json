@@ -1,7 +1,7 @@
 {
   "name": "sales-support",
   "version": "1.0.0",
-  "description": "Sales CRM - Client Management System",
+  "description": "USDS Dental Supplies - Client Management System",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

@@ -531,7 +531,7 @@ function injectMobileTopbar() {
   bar.innerHTML = `
     <div class="mobile-topbar-left">
       <button class="mobile-menu-btn" id="mobile-menu-btn" aria-label="Open client list">☰</button>
-      <span>Sales CRM</span>
+      <span>USDS Dental Supplies</span>
     </div>
     <button class="btn btn-primary btn-sm" id="mobile-add-btn">+ Add</button>
   `;
