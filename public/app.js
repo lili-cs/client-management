@@ -37,6 +37,20 @@ function toast(msg, type = 'info') {
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
+// ── Geocoding (Nominatim / OpenStreetMap) ─────────────────────────────────────
+async function geocodeAddress(address) {
+  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&addressdetails=1&limit=1`;
+  try {
+    const res  = await fetch(url, { headers: { 'User-Agent': 'USDS-Dental-Supplies-CRM/1.0' } });
+    const data = await res.json();
+    if (!data.length) return null;
+    const a = data[0].address;
+    return a.city || a.town || a.village || a.suburb || a.municipality || a.county || null;
+  } catch {
+    return null;
+  }
+}
+
 function escHtml(s) {
   return String(s)
     .replace(/&/g, '&amp;')
@@ -386,14 +400,26 @@ async function submitForm(e) {
 
   nameErr.textContent = '';
   nameEl.classList.remove('error');
-  const clinicEl = form.elements['clinic_name'];
+  const clinicEl   = form.elements['clinic_name'];
+  const addressEl  = form.elements['address'];
+  const addressErr = document.getElementById('address-error');
   clinicEl.classList.remove('error');
+  addressEl.classList.remove('error');
+  if (addressErr) addressErr.textContent = '';
 
   const clinic_name = clinicEl.value.trim();
   if (!clinic_name) {
     clinicEl.classList.add('error');
     nameErr.textContent = 'Clinic Name is required.';
     clinicEl.focus();
+    return;
+  }
+
+  const address = addressEl.value.trim();
+  if (!address) {
+    addressEl.classList.add('error');
+    if (addressErr) addressErr.textContent = 'Address is required.';
+    addressEl.focus();
     return;
   }
 
@@ -688,6 +714,24 @@ function bindEvents() {
   // Modal photo staging (new client)
   const modalPhotoInput = document.getElementById('modal-photo-input');
   const modalPhotoDrop  = document.getElementById('modal-photo-drop');
+
+  // Auto-geocode address → area
+  document.getElementById('f-address').addEventListener('blur', async () => {
+    const addressEl = document.getElementById('f-address');
+    const areaEl    = document.getElementById('f-area');
+    const status    = document.getElementById('geocode-status');
+    const address   = addressEl.value.trim();
+    if (!address || areaEl.value.trim()) return; // skip if address empty or area already set
+    status.textContent = '⟳ Detecting…';
+    const town = await geocodeAddress(address);
+    if (town) {
+      areaEl.value = town;
+      status.textContent = '✓ Auto-filled';
+      setTimeout(() => { status.textContent = ''; }, 3000);
+    } else {
+      status.textContent = '';
+    }
+  });
 
   document.getElementById('modal-browse-btn').addEventListener('click', () => modalPhotoInput.click());
   modalPhotoInput.addEventListener('change', () => {
