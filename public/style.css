@@ -767,6 +767,18 @@ body {
   gap: 12px;
 }
 
+.address-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.address-row-csz {
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: 6px;
+  margin: 0;
+}
+
 .form-group { display: flex; flex-direction: column; gap: 5px; }
 
 label {
@@ -925,8 +937,9 @@ input.error { border-color: var(--danger); }
 @media (max-width: 900px) {
   :root { --sidebar-w: 260px; }
 
-  .info-grid { grid-template-columns: 1fr 1fr; }
-  .form-row  { grid-template-columns: 1fr; }
+  .info-grid        { grid-template-columns: 1fr 1fr; }
+  .form-row         { grid-template-columns: 1fr; }
+  .address-row-csz  { grid-template-columns: 1fr; }
 }
 
 /* Mobile */

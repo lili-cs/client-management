@@ -51,6 +51,48 @@ async function geocodeAddress(address) {
   }
 }
 
+// ── Address helpers ───────────────────────────────────────────────────────────
+// Build a single address string from shipping-style sub-fields
+function buildAddress({ street, line2, city, state, postcode }) {
+  const parts = [street.trim()];
+  if (line2.trim()) parts.push(line2.trim());
+  const csz = [city.trim(), state.trim(), postcode.trim()].filter(Boolean).join(' ');
+  if (csz) parts.push(csz);
+  return parts.join(', ');
+}
+
+// Parse a stored address string back into sub-fields (best-effort for legacy data)
+function parseAddressParts(addr) {
+  const blank = { street: '', line2: '', city: '', state: '', postcode: '' };
+  if (!addr) return blank;
+
+  // If the address was saved in our format, it looks like:
+  // "123 Main St[, Suite 4], City STATE 1234"
+  // Split on ', ' — last segment is "City STATE Postcode", rest is street[+line2]
+  const parts = addr.split(', ');
+  if (parts.length < 2) return { ...blank, street: addr };
+
+  const last = parts[parts.length - 1];
+  // Try to extract postcode (trailing digits, 4-10 chars) from last segment
+  const postcodeMatch = last.match(/\b(\d{4,10})\s*$/);
+  const postcode = postcodeMatch ? postcodeMatch[1] : '';
+  const withoutPostcode = postcode ? last.slice(0, last.lastIndexOf(postcode)).trim() : last;
+
+  // Remaining: "City STATE" — split on last space for state abbreviation (1-3 uppercase letters)
+  const stateMatch = withoutPostcode.match(/^(.*?)\s+([A-Z]{2,3})$/);
+  const city  = stateMatch ? stateMatch[1] : withoutPostcode;
+  const state = stateMatch ? stateMatch[2] : '';
+
+  const streetParts = parts.slice(0, parts.length - 1);
+  return {
+    street:   streetParts[0] || '',
+    line2:    streetParts.slice(1).join(', '),
+    city,
+    state,
+    postcode,
+  };
+}
+
 function escHtml(s) {
   return String(s)
     .replace(/&/g, '&amp;')
@@ -344,11 +386,20 @@ function openModal(client = null) {
   nameErr.textContent = '';
 
   // Populate form
-  const fields = ['name','company','email','phone','address','clinic_name','manager','relevant_people','tags','notes'];
+  const fields = ['name','company','email','phone','clinic_name','manager','relevant_people','tags','notes'];
   fields.forEach(f => {
     const el = form.elements[f];
     if (el) el.value = client ? (client[f] || '') : '';
   });
+
+  // Populate address sub-fields — parse stored address back into parts when editing
+  const storedAddr = client ? (client.address || '') : '';
+  const parsed = parseAddressParts(storedAddr);
+  form.elements['addr_street'].value   = parsed.street;
+  form.elements['addr_line2'].value    = parsed.line2;
+  form.elements['addr_city'].value     = parsed.city;
+  form.elements['addr_state'].value    = parsed.state;
+  form.elements['addr_postcode'].value = parsed.postcode;
 
   form.dataset.clientId = client ? client.id : '';
 
@@ -401,10 +452,12 @@ async function submitForm(e) {
   nameErr.textContent = '';
   nameEl.classList.remove('error');
   const clinicEl   = form.elements['clinic_name'];
-  const addressEl  = form.elements['address'];
   const addressErr = document.getElementById('address-error');
+  const streetEl   = form.elements['addr_street'];
+  const cityEl     = form.elements['addr_city'];
   clinicEl.classList.remove('error');
-  addressEl.classList.remove('error');
+  streetEl.classList.remove('error');
+  cityEl.classList.remove('error');
   if (addressErr) addressErr.textContent = '';
 
   const clinic_name = clinicEl.value.trim();
@@ -415,20 +468,26 @@ async function submitForm(e) {
     return;
   }
 
-  const address = addressEl.value.trim();
-  if (!address) {
-    addressEl.classList.add('error');
-    if (addressErr) addressErr.textContent = 'Address is required.';
-    addressEl.focus();
+  const addrParts = {
+    street:   form.elements['addr_street'].value,
+    line2:    form.elements['addr_line2'].value,
+    city:     form.elements['addr_city'].value,
+    state:    form.elements['addr_state'].value,
+    postcode: form.elements['addr_postcode'].value,
+  };
+  if (!addrParts.street.trim()) {
+    streetEl.classList.add('error');
+    if (addressErr) addressErr.textContent = 'Street address is required.';
+    streetEl.focus();
     return;
   }
-  // Basic address format: must contain at least one digit and one letter (e.g. "123 Main St")
-  if (!/\d/.test(address) || !/[a-zA-Z]/.test(address) || address.length < 5) {
-    addressEl.classList.add('error');
-    if (addressErr) addressErr.textContent = 'Enter a full street address (e.g. 123 Main St, City).';
-    addressEl.focus();
+  if (!addrParts.city.trim()) {
+    cityEl.classList.add('error');
+    if (addressErr) addressErr.textContent = 'City is required.';
+    cityEl.focus();
     return;
   }
+  const address = buildAddress(addrParts);
 
   const name = nameEl.value.trim() || clinic_name; // fallback to clinic name if contact blank
 
