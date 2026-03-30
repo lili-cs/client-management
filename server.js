@@ -4,51 +4,20 @@ const { createClient } = require('@libsql/client');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 
-// ── Cloudflare R2 setup (optional) ───────────────────────────────────────────
-const R2_ENABLED = !!(
-  process.env.R2_ACCOUNT_ID &&
-  process.env.R2_ACCESS_KEY_ID &&
-  process.env.R2_SECRET_ACCESS_KEY &&
-  process.env.R2_BUCKET_NAME
-);
-
-let r2 = null;
-let PutObjectCommand, GetObjectCommand, DeleteObjectCommand, DeleteObjectsCommand;
-
-if (R2_ENABLED) {
-  const sdk = require('@aws-sdk/client-s3');
-  PutObjectCommand     = sdk.PutObjectCommand;
-  GetObjectCommand     = sdk.GetObjectCommand;
-  DeleteObjectCommand  = sdk.DeleteObjectCommand;
-  DeleteObjectsCommand = sdk.DeleteObjectsCommand;
-
-  r2 = new sdk.S3Client({
-    region: 'auto',
-    endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
-    credentials: {
-      accessKeyId: process.env.R2_ACCESS_KEY_ID,
-      secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
-    },
-  });
-}
-
 // ── Directory setup ───────────────────────────────────────────────────────────
-// On Vercel the project root is read-only; use /tmp for any local fallback paths.
 const IS_VERCEL   = !!process.env.VERCEL;
 const TMP         = IS_VERCEL ? '/tmp' : __dirname;
 const UPLOADS_DIR = path.join(TMP, 'uploads');
 const BACKUP_DIR  = path.join(TMP, 'backups');
 const DB_DIR      = path.join(TMP, 'db');
 
-// Only create dirs that will actually be used
-if (!R2_ENABLED)                          [UPLOADS_DIR, BACKUP_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));
-if (!process.env.TURSO_DATABASE_URL)      fs.mkdirSync(DB_DIR, { recursive: true });
+[UPLOADS_DIR, BACKUP_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));
+if (!process.env.TURSO_DATABASE_URL) fs.mkdirSync(DB_DIR, { recursive: true });
 
 // ── Turso / libSQL setup ──────────────────────────────────────────────────────
-// Vercel serverless doesn't support WebSockets, so replace libsql:// with https://
-// @libsql/client supports both protocols; https:// uses plain HTTP requests.
 const tursoUrl = (process.env.TURSO_DATABASE_URL || '')
   .replace(/^libsql:\/\//, 'https://') || `file:${path.join(DB_DIR, 'clients.db')}`;
 
@@ -111,27 +80,70 @@ function ensureDb() {
 }
 
 // ── Multer ────────────────────────────────────────────────────────────────────
-const multerStorage = R2_ENABLED
-  ? multer.memoryStorage()
-  : multer.diskStorage({
-      destination(req, _file, cb) {
-        const dir = path.join(UPLOADS_DIR, req.params.id);
-        fs.mkdirSync(dir, { recursive: true });
-        cb(null, dir);
-      },
-      filename(_req, file, cb) {
-        cb(null, `${uuidv4()}${path.extname(file.originalname).toLowerCase()}`);
-      },
-    });
-
 const upload = multer({
-  storage: multerStorage,
+  storage: multer.diskStorage({
+    destination(req, _file, cb) {
+      const dir = path.join(UPLOADS_DIR, req.params.id);
+      fs.mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename(_req, file, cb) {
+      cb(null, `${uuidv4()}${path.extname(file.originalname).toLowerCase()}`);
+    },
+  }),
   limits: { fileSize: 15 * 1024 * 1024 },
   fileFilter(_req, file, cb) {
     if (/^image\/(jpeg|png|gif|webp)$/.test(file.mimetype)) cb(null, true);
     else cb(new Error('Only JPEG, PNG, GIF, and WebP images are allowed'));
   },
 });
+
+// ── Auto daily backup ─────────────────────────────────────────────────────────
+let lastBackupHash = null;
+
+async function runBackupIfChanged() {
+  try {
+    const cr = await db.execute('SELECT * FROM clients');
+    const pr = await db.execute('SELECT * FROM client_photos');
+    const payload = {
+      timestamp: new Date().toISOString(),
+      version: 1,
+      stats: { clients: cr.rows.length, photos: pr.rows.length },
+      clients: cr.rows.map(r => ({ ...r })),
+      photos:  pr.rows.map(r => ({ ...r })),
+    };
+    const content = JSON.stringify(payload);
+    const hash = crypto.createHash('sha256').update(content).digest('hex');
+
+    if (hash === lastBackupHash) return; // no changes
+
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const filePath = path.join(BACKUP_DIR, `clients-${ts}.json`);
+    fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf8');
+    lastBackupHash = hash;
+
+    // Keep only the 30 most recent backups
+    const files = fs.readdirSync(BACKUP_DIR)
+      .filter(f => f.startsWith('clients-') && f.endsWith('.json'))
+      .sort();
+    if (files.length > 30) {
+      files.slice(0, files.length - 30).forEach(f => {
+        try { fs.unlinkSync(path.join(BACKUP_DIR, f)); } catch {}
+      });
+    }
+
+    console.log(`[backup] Saved ${filePath}`);
+  } catch (err) {
+    console.error('[backup] Failed:', err.message);
+  }
+}
+
+function scheduleDailyBackup() {
+  // Run once at startup (after a short delay to let the DB warm up)
+  setTimeout(runBackupIfChanged, 5000);
+  // Then every 24 hours
+  setInterval(runBackupIfChanged, 24 * 60 * 60 * 1000);
+}
 
 // ── App ───────────────────────────────────────────────────────────────────────
 const app = express();
@@ -151,54 +163,15 @@ app.use(async (_req, res, next) => {
 function row(r)   { return r ? { ...r } : null; }
 function rows(rs) { return rs.map(r => ({ ...r })); }
 
-async function saveBackup(payload) {
-  const ts      = new Date().toISOString().replace(/[:.]/g, '-');
-  const content = JSON.stringify(payload, null, 2);
-
-  if (R2_ENABLED) {
-    const key = `backups/clients-${ts}.json`;
-    await r2.send(new PutObjectCommand({
-      Bucket: process.env.R2_BUCKET_NAME,
-      Key: key, Body: content, ContentType: 'application/json',
-    }));
-    return { type: 'r2', location: key };
-  } else {
-    const filePath = path.join(BACKUP_DIR, `clients-${ts}.json`);
-    fs.writeFileSync(filePath, content, 'utf8');
-    return { type: 'local', location: filePath };
-  }
-}
-
 // ── Photo proxy ───────────────────────────────────────────────────────────────
-app.get('/api/photos/:clientId/:filename', async (req, res) => {
+app.get('/api/photos/:clientId/:filename', (req, res) => {
   const { clientId, filename } = req.params;
   if (!/^[\w-]+$/.test(clientId) || !/^[\w\-.]+$/.test(filename)) return res.status(400).end();
 
-  const ext = path.extname(filename).toLowerCase();
-  const contentTypes = {
-    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-    '.png': 'image/png',  '.gif':  'image/gif',  '.webp': 'image/webp',
-  };
-
-  if (R2_ENABLED) {
-    try {
-      const obj = await r2.send(new GetObjectCommand({
-        Bucket: process.env.R2_BUCKET_NAME,
-        Key: `photos/${clientId}/${filename}`,
-      }));
-      res.setHeader('Content-Type', obj.ContentType || contentTypes[ext] || 'image/jpeg');
-      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-      obj.Body.pipe(res);
-    } catch (err) {
-      if (err.name === 'NoSuchKey') res.status(404).end();
-      else { console.error('R2 get:', err.message); res.status(500).end(); }
-    }
-  } else {
-    const filePath = path.join(UPLOADS_DIR, clientId, filename);
-    if (!fs.existsSync(filePath)) return res.status(404).end();
-    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-    res.sendFile(filePath);
-  }
+  const filePath = path.join(UPLOADS_DIR, clientId, filename);
+  if (!fs.existsSync(filePath)) return res.status(404).end();
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  res.sendFile(filePath);
 });
 
 // ── Routes: clients ───────────────────────────────────────────────────────────
@@ -276,23 +249,8 @@ app.delete('/api/clients/:id', async (req, res) => {
     const ex = await db.execute({ sql: 'SELECT id FROM clients WHERE id = ?', args: [req.params.id] });
     if (!ex.rows[0]) return res.status(404).json({ error: 'Client not found' });
 
-    const pr = await db.execute({ sql: 'SELECT * FROM client_photos WHERE client_id = ?', args: [req.params.id] });
-    const clientPhotos = rows(pr.rows);
-
-    if (R2_ENABLED && clientPhotos.length) {
-      const objects = clientPhotos.filter(p => p.drive_path).map(p => ({ Key: p.drive_path }));
-      if (objects.length) {
-        try {
-          await r2.send(new DeleteObjectsCommand({
-            Bucket: process.env.R2_BUCKET_NAME,
-            Delete: { Objects: objects },
-          }));
-        } catch (e) { console.error('R2 deleteObjects:', e.message); }
-      }
-    } else if (!R2_ENABLED) {
-      const clientDir = path.join(UPLOADS_DIR, req.params.id);
-      if (fs.existsSync(clientDir)) fs.rmSync(clientDir, { recursive: true, force: true });
-    }
+    const clientDir = path.join(UPLOADS_DIR, req.params.id);
+    if (fs.existsSync(clientDir)) fs.rmSync(clientDir, { recursive: true, force: true });
 
     await db.execute({ sql: 'DELETE FROM client_photos WHERE client_id = ?', args: [req.params.id] });
     await db.execute({ sql: 'DELETE FROM clients WHERE id = ?', args: [req.params.id] });
@@ -317,30 +275,14 @@ app.post('/api/clients/:id/photos', async (req, res) => {
 
     const fc = await db.execute({ sql: 'SELECT COUNT(*) AS n FROM client_photos WHERE client_id = ?', args: [req.params.id] });
     if (Number(fc.rows[0].n) >= 10) {
-      if (req.file.path) fs.unlinkSync(req.file.path);
+      fs.unlinkSync(req.file.path);
       return res.status(400).json({ error: 'Maximum of 10 photos per client reached' });
-    }
-
-    let filename, drivePath;
-
-    if (R2_ENABLED) {
-      filename  = `${uuidv4()}${path.extname(req.file.originalname).toLowerCase()}`;
-      drivePath = `photos/${req.params.id}/${filename}`;
-      try {
-        await r2.send(new PutObjectCommand({
-          Bucket: process.env.R2_BUCKET_NAME,
-          Key: drivePath, Body: req.file.buffer, ContentType: req.file.mimetype,
-        }));
-      } catch (e) { return res.status(500).json({ error: 'Failed to upload to R2: ' + e.message }); }
-    } else {
-      filename  = req.file.filename;
-      drivePath = null;
     }
 
     const photoId = uuidv4();
     await db.execute({
       sql: `INSERT INTO client_photos (id, client_id, filename, original_name, drive_path) VALUES (?, ?, ?, ?, ?)`,
-      args: [photoId, req.params.id, filename, req.file.originalname, drivePath],
+      args: [photoId, req.params.id, req.file.filename, req.file.originalname, null],
     });
     const pr = await db.execute({ sql: 'SELECT * FROM client_photos WHERE id = ?', args: [photoId] });
     res.status(201).json(row(pr.rows[0]));
@@ -356,13 +298,8 @@ app.delete('/api/clients/:id/photos/:photoId', async (req, res) => {
     const photo = row(pr.rows[0]);
     if (!photo) return res.status(404).json({ error: 'Photo not found' });
 
-    if (R2_ENABLED && photo.drive_path) {
-      try { await r2.send(new DeleteObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: photo.drive_path })); }
-      catch (e) { console.error('R2 delete:', e.message); }
-    } else if (!R2_ENABLED && photo.filename) {
-      const fp = path.join(UPLOADS_DIR, req.params.id, photo.filename);
-      if (fs.existsSync(fp)) fs.unlinkSync(fp);
-    }
+    const fp = path.join(UPLOADS_DIR, req.params.id, photo.filename);
+    if (fs.existsSync(fp)) fs.unlinkSync(fp);
 
     await db.execute({ sql: 'DELETE FROM client_photos WHERE id = ?', args: [req.params.photoId] });
     res.json({ success: true });
@@ -381,32 +318,14 @@ app.post('/api/clients/:id/profile-photo', (req, res) => {
     if (!client) return res.status(404).json({ error: 'Client not found' });
 
     // Delete old profile photo if it exists
-    if (R2_ENABLED && client.profile_photo_drive) {
-      try { await r2.send(new DeleteObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: client.profile_photo_drive })); } catch {}
-    } else if (!R2_ENABLED && client.profile_photo) {
+    if (client.profile_photo) {
       const old = path.join(UPLOADS_DIR, req.params.id, client.profile_photo);
       if (fs.existsSync(old)) fs.unlinkSync(old);
     }
 
-    let filename, drivePath;
-
-    if (R2_ENABLED) {
-      filename  = `profile-${uuidv4()}${path.extname(req.file.originalname).toLowerCase()}`;
-      drivePath = `photos/${req.params.id}/${filename}`;
-      try {
-        await r2.send(new PutObjectCommand({
-          Bucket: process.env.R2_BUCKET_NAME,
-          Key: drivePath, Body: req.file.buffer, ContentType: req.file.mimetype,
-        }));
-      } catch (e) { return res.status(500).json({ error: 'Failed to upload to R2: ' + e.message }); }
-    } else {
-      filename  = req.file.filename;
-      drivePath = null;
-    }
-
     await db.execute({
-      sql: `UPDATE clients SET profile_photo=?, profile_photo_drive=?, updated_at=datetime('now') WHERE id=?`,
-      args: [filename, drivePath || '', req.params.id],
+      sql: `UPDATE clients SET profile_photo=?, profile_photo_drive='', updated_at=datetime('now') WHERE id=?`,
+      args: [req.file.filename, req.params.id],
     });
 
     const updated = await db.execute({ sql: 'SELECT * FROM clients WHERE id = ?', args: [req.params.id] });
@@ -420,9 +339,7 @@ app.delete('/api/clients/:id/profile-photo', async (req, res) => {
     const client = row(ex.rows[0]);
     if (!client) return res.status(404).json({ error: 'Client not found' });
 
-    if (R2_ENABLED && client.profile_photo_drive) {
-      try { await r2.send(new DeleteObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: client.profile_photo_drive })); } catch {}
-    } else if (!R2_ENABLED && client.profile_photo) {
+    if (client.profile_photo) {
       const fp = path.join(UPLOADS_DIR, req.params.id, client.profile_photo);
       if (fs.existsSync(fp)) fs.unlinkSync(fp);
     }
@@ -435,41 +352,20 @@ app.delete('/api/clients/:id/profile-photo', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ── Routes: backup & info ─────────────────────────────────────────────────────
-
-app.post('/api/backup', async (req, res) => {
-  try {
-    const cr = await db.execute('SELECT * FROM clients');
-    const pr = await db.execute('SELECT * FROM client_photos');
-    const result = await saveBackup({
-      timestamp: new Date().toISOString(), version: 1,
-      stats: { clients: cr.rows.length, photos: pr.rows.length },
-      clients: rows(cr.rows), photos: rows(pr.rows),
-    });
-    res.json({ success: true, ...result });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.get('/api/info', (_req, res) => {
-  res.json({
-    r2Enabled:   R2_ENABLED,
-    storageType: R2_ENABLED ? 'cloudflare-r2' : 'local',
-    bucket:      R2_ENABLED ? process.env.R2_BUCKET_NAME : null,
-    db:          process.env.TURSO_DATABASE_URL ? 'turso' : 'local-sqlite',
-  });
-});
-
 // ── Export for Vercel / start for local dev ───────────────────────────────────
 if (require.main === module) {
   const PORT = process.env.PORT || 3000;
   initDb()
-    .then(() => app.listen(PORT, () => {
-      const dbMode    = process.env.TURSO_DATABASE_URL ? `Turso (${process.env.TURSO_DATABASE_URL})` : 'local SQLite';
-      const storeMode = R2_ENABLED ? `Cloudflare R2 (${process.env.R2_BUCKET_NAME})` : 'local (./uploads/ + ./backups/)';
-      console.log(`\n  Sales Support CRM  →  http://localhost:${PORT}`);
-      console.log(`  Database:             ${dbMode}`);
-      console.log(`  Photo/backup storage: ${storeMode}\n`);
-    }))
+    .then(() => {
+      scheduleDailyBackup();
+      app.listen(PORT, () => {
+        const dbMode = process.env.TURSO_DATABASE_URL ? `Turso (${process.env.TURSO_DATABASE_URL})` : 'local SQLite';
+        console.log(`\n  Sales Support CRM  →  http://localhost:${PORT}`);
+        console.log(`  Database:             ${dbMode}`);
+        console.log(`  Photos:               ${UPLOADS_DIR}`);
+        console.log(`  Backups:              ${BACKUP_DIR} (auto daily)\n`);
+      });
+    })
     .catch(err => { console.error('Failed to initialise database:', err); process.exit(1); });
 }
 

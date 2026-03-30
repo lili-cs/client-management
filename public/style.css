@@ -218,25 +218,6 @@ body {
   flex-shrink: 0;
 }
 
-/* ── Sidebar footer ───────────────────────────────────────────── */
-.sidebar-footer {
-  padding: 10px 14px;
-  border-top: 1px solid rgba(255,255,255,.07);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.storage-badge {
-  font-size: 11px;
-  color: #475569;
-  text-align: right;
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 
 /* ── Main area ────────────────────────────────────────────────── */
 .main {

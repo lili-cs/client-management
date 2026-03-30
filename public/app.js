@@ -612,40 +612,6 @@ function lightboxNav(dir) {
   updateLightboxImage();
 }
 
-// ── Backup ────────────────────────────────────────────────────────────────────
-async function triggerBackup() {
-  const btn = document.getElementById('backup-btn');
-  btn.disabled = true;
-  btn.innerHTML = '<span>☁</span> Backing up…';
-  try {
-    const result = await api('POST', '/api/backup');
-    if (result.type === 's3') {
-      toast('Backup saved to S3.', 'success');
-    } else {
-      toast(`Backup saved locally: ${result.location.split('/').slice(-1)[0]}`, 'success');
-    }
-  } catch (err) {
-    toast('Backup failed: ' + err.message, 'error');
-  } finally {
-    btn.disabled = false;
-    btn.innerHTML = '<span>☁</span> Backup Now';
-  }
-}
-
-// ── Storage info badge ────────────────────────────────────────────────────────
-async function loadStorageInfo() {
-  try {
-    const info = await api('GET', '/api/info');
-    const badge = document.getElementById('storage-badge');
-    if (info.r2Enabled) {
-      badge.textContent = `R2: ${info.bucket}`;
-      badge.title = `Photos and backups stored on Cloudflare R2 bucket: ${info.bucket}`;
-    } else {
-      badge.textContent = 'Local storage';
-      badge.title = 'Photos and backups saved locally — add R2 credentials to .env for cloud storage';
-    }
-  } catch {}
-}
 
 // ── Search (debounced) ────────────────────────────────────────────────────────
 let searchTimer;
@@ -804,9 +770,6 @@ function bindEvents() {
     if (e.key === 'ArrowRight' && !document.getElementById('lightbox-overlay').hidden) lightboxNav(1);
   });
 
-  // Backup
-  document.getElementById('backup-btn').addEventListener('click', triggerBackup);
-
   // Search
   document.getElementById('search-input').addEventListener('input', onSearch);
 }
@@ -815,7 +778,6 @@ async function init() {
   injectMobileTopbar();
   bindEvents();
   await loadClients();
-  await loadStorageInfo();
 }
 
 init();
