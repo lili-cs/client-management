@@ -129,6 +129,16 @@ function photoUrl(clientId, filename) {
 
 // ── Render: client list ───────────────────────────────────────────────────────
 function clientCardHtml(c) {
+  const today = new Date().toISOString().slice(0, 10);
+  const in7   = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+  const followup = c.next_followup_date || '';
+  const dotClass = followup < today && followup
+    ? 'overdue'
+    : (followup && followup <= in7 ? 'due-soon' : '');
+  const dotTitle = dotClass === 'overdue'
+    ? `Follow-up overdue (was ${followup})`
+    : (dotClass === 'due-soon' ? `Follow-up due ${followup}` : '');
+
   return `
     <div class="client-card ${c.id === state.selectedId ? 'active' : ''}"
          data-id="${escHtml(c.id)}" role="button" tabindex="0">
@@ -141,6 +151,7 @@ function clientCardHtml(c) {
         <div class="card-name">${escHtml(c.clinic_name || c.name)}</div>
         <div class="card-sub">${escHtml(c.manager || c.email || '—')}</div>
       </div>
+      ${dotClass ? `<span class="card-followup-dot ${dotClass}" title="${escHtml(dotTitle)}"></span>` : ''}
       ${c.photo_count > 0
         ? `<span class="card-badge" title="${c.photo_count} photo${c.photo_count !== 1 ? 's' : ''}">📷 ${c.photo_count}</span>`
         : ''}
@@ -356,9 +367,12 @@ async function selectClient(id) {
   document.getElementById('sidebar').classList.remove('open');
 
   try {
-    const client = await api('GET', `/api/clients/${id}`);
+    const [client] = await Promise.all([
+      api('GET', `/api/clients/${id}`),
+    ]);
     state.selectedDetail = client;
     renderDetail(client);
+    loadVisits(id); // non-blocking
   } catch (err) {
     toast(err.message, 'error');
   }
@@ -683,6 +697,191 @@ function lightboxNav(dir) {
 }
 
 
+// ── Visit History ─────────────────────────────────────────────────────────────
+const VISIT_ICONS  = { visit: '🏥', call: '📞', email: '📧', other: '📝' };
+const VISIT_LABELS = { visit: 'In-person', call: 'Phone call', email: 'Email', other: 'Other' };
+
+function formatDateTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso.includes('Z') || iso.includes('+') ? iso : iso + 'Z');
+  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+    + ' · '
+    + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+}
+
+async function loadVisits(clientId) {
+  try {
+    const visits = await api('GET', `/api/clients/${clientId}/visits`);
+    renderVisits(visits, clientId);
+  } catch (err) {
+    toast('Failed to load visits: ' + err.message, 'error');
+  }
+}
+
+function renderVisits(visits, clientId) {
+  const container = document.getElementById('visits-list');
+  if (!container) return;
+
+  if (!visits.length) {
+    container.innerHTML = '<p class="visits-empty">No visits logged yet.</p>';
+    return;
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  container.innerHTML = visits.map(v => {
+    const overdue = v.next_followup_date && v.next_followup_date < today;
+    const followupHtml = v.next_followup_date ? `
+      <div class="visit-followup ${overdue ? 'overdue' : ''}">
+        ${overdue ? '⚠ Follow-up overdue:' : '↳ Follow up by:'} ${formatDate(v.next_followup_date)}
+      </div>` : '';
+
+    return `
+      <div class="visit-entry" data-visit-id="${escHtml(v.id)}">
+        <div class="visit-icon">${VISIT_ICONS[v.type] || '📝'}</div>
+        <div class="visit-body">
+          <div class="visit-meta">
+            <span class="visit-date">${formatDateTime(v.visited_at)}</span>
+            <span class="visit-type-chip">${escHtml(VISIT_LABELS[v.type] || v.type)}</span>
+          </div>
+          ${v.notes ? `<p class="visit-notes">${escHtml(v.notes)}</p>` : ''}
+          ${followupHtml}
+        </div>
+        <div class="visit-actions">
+          <button class="btn-xs visit-edit-btn" data-visit-id="${escHtml(v.id)}" title="Edit">✎</button>
+          <button class="btn-xs danger visit-delete-btn" data-visit-id="${escHtml(v.id)}" title="Delete">✕</button>
+        </div>
+      </div>`;
+  }).join('');
+
+  // Wire edit/delete after render
+  const cachedVisits = visits;
+  container.querySelectorAll('.visit-edit-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const v = cachedVisits.find(x => x.id === btn.dataset.visitId);
+      if (v) openVisitModal(v);
+    });
+  });
+  container.querySelectorAll('.visit-delete-btn').forEach(btn => {
+    btn.addEventListener('click', () => deleteVisit(clientId, btn.dataset.visitId));
+  });
+}
+
+function localDatetimeValue(isoStr) {
+  // Convert ISO string → "YYYY-MM-DDTHH:MM" for datetime-local input
+  const d = new Date(isoStr.includes('Z') || isoStr.includes('+') ? isoStr : isoStr + 'Z');
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function openVisitModal(visit = null) {
+  const overlay = document.getElementById('visit-modal-overlay');
+  const form    = document.getElementById('visit-form');
+  document.getElementById('visit-modal-title').textContent = visit ? 'Edit Visit' : 'Log Visit';
+
+  form.reset();
+  form.dataset.visitId = visit ? visit.id : '';
+
+  if (visit) {
+    form.elements['visited_at'].value        = localDatetimeValue(visit.visited_at);
+    form.elements['type'].value              = visit.type || 'visit';
+    form.elements['notes'].value             = visit.notes || '';
+    form.elements['next_followup_date'].value = visit.next_followup_date || '';
+  } else {
+    form.elements['visited_at'].value = localDatetimeValue(new Date().toISOString());
+    form.elements['type'].value       = 'visit';
+  }
+
+  overlay.hidden = false;
+  form.elements['visited_at'].focus();
+}
+
+function closeVisitModal() {
+  document.getElementById('visit-modal-overlay').hidden = true;
+}
+
+async function submitVisitForm(e) {
+  e.preventDefault();
+  const form    = document.getElementById('visit-form');
+  const saveBtn = document.getElementById('visit-save-btn');
+  const clientId = state.selectedId;
+  if (!clientId) return;
+
+  const visitedAt = form.elements['visited_at'].value;
+  if (!visitedAt) { toast('Date & time is required.', 'error'); return; }
+
+  const payload = {
+    visited_at:         new Date(visitedAt).toISOString(),
+    type:               form.elements['type'].value,
+    notes:              form.elements['notes'].value.trim(),
+    next_followup_date: form.elements['next_followup_date'].value || '',
+  };
+
+  const visitId = form.dataset.visitId;
+  saveBtn.disabled = true;
+  saveBtn.textContent = 'Saving…';
+
+  try {
+    if (visitId) {
+      await api('PUT', `/api/clients/${clientId}/visits/${visitId}`, payload);
+      toast('Visit updated.', 'success');
+    } else {
+      await api('POST', `/api/clients/${clientId}/visits`, payload);
+      toast('Visit logged.', 'success');
+    }
+    closeVisitModal();
+    await loadVisits(clientId);
+    await loadClients(document.getElementById('search-input').value.trim());
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    saveBtn.disabled = false;
+    saveBtn.textContent = 'Save';
+  }
+}
+
+async function deleteVisit(clientId, visitId) {
+  if (!confirm('Delete this visit record?')) return;
+  try {
+    await api('DELETE', `/api/clients/${clientId}/visits/${visitId}`);
+    toast('Visit deleted.', 'info');
+    await loadVisits(clientId);
+    await loadClients(document.getElementById('search-input').value.trim());
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+// ── AI Follow-up ──────────────────────────────────────────────────────────────
+async function generateAiFollowup() {
+  const clientId = state.selectedId;
+  if (!clientId) return;
+
+  const overlay = document.getElementById('ai-modal-overlay');
+  const body    = document.getElementById('ai-modal-body');
+  overlay.hidden = false;
+  body.innerHTML = '<div class="ai-loading"><div class="spinner"></div> Generating suggestion…</div>';
+
+  try {
+    const result = await api('POST', `/api/clients/${clientId}/ai-followup`);
+    body.innerHTML = `
+      <div class="ai-suggestion">
+        <pre class="ai-text">${escHtml(result.suggestion)}</pre>
+        <button class="btn btn-ghost btn-sm" id="ai-copy-btn">Copy to clipboard</button>
+      </div>`;
+    document.getElementById('ai-copy-btn').addEventListener('click', async () => {
+      await navigator.clipboard.writeText(result.suggestion);
+      toast('Copied to clipboard.', 'success');
+    });
+  } catch (err) {
+    body.innerHTML = `<div class="ai-error">${escHtml(err.message)}</div>`;
+  }
+}
+
+function closeAiModal() {
+  document.getElementById('ai-modal-overlay').hidden = true;
+}
+
 // ── Search (debounced) ────────────────────────────────────────────────────────
 let searchTimer;
 function onSearch(e) {
@@ -812,10 +1011,30 @@ function bindEvents() {
     if (e.target === e.currentTarget) closeLightbox();
   });
 
+  // Visit modal
+  document.getElementById('visit-modal-close').addEventListener('click', closeVisitModal);
+  document.getElementById('visit-cancel-btn').addEventListener('click', closeVisitModal);
+  document.getElementById('visit-form').addEventListener('submit', submitVisitForm);
+  document.getElementById('visit-modal-overlay').addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeVisitModal();
+  });
+
+  // Log visit / AI follow-up buttons (in detail view)
+  document.getElementById('log-visit-btn').addEventListener('click', () => openVisitModal());
+  document.getElementById('ai-followup-btn').addEventListener('click', generateAiFollowup);
+
+  // AI modal
+  document.getElementById('ai-modal-close').addEventListener('click', closeAiModal);
+  document.getElementById('ai-modal-overlay').addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeAiModal();
+  });
+
   // Keyboard shortcuts
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
       if (!document.getElementById('lightbox-overlay').hidden) { closeLightbox(); return; }
+      if (!document.getElementById('ai-modal-overlay').hidden) { closeAiModal(); return; }
+      if (!document.getElementById('visit-modal-overlay').hidden) { closeVisitModal(); return; }
       if (!document.getElementById('modal-overlay').hidden) { closeModal(); return; }
     }
     if (e.key === 'ArrowLeft'  && !document.getElementById('lightbox-overlay').hidden) lightboxNav(-1);

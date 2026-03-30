@@ -83,6 +83,18 @@
             <div id="detail-tags" class="tags-list"></div>
           </div>
 
+          <!-- Visit History -->
+          <div class="visits-section">
+            <div class="visits-header">
+              <h3 class="section-title">Visit History</h3>
+              <div class="visits-header-actions">
+                <button class="btn btn-ghost btn-sm" id="ai-followup-btn" title="Generate AI follow-up message">✨ AI Follow-up</button>
+                <button class="btn btn-primary btn-sm" id="log-visit-btn">+ Log Visit</button>
+              </div>
+            </div>
+            <div id="visits-list"></div>
+          </div>
+
           <!-- Nearby clients -->
           <div class="nearby-section" id="nearby-section" hidden>
             <h3 class="section-title" id="nearby-title">Nearby</h3>
@@ -112,7 +124,7 @@
     </main>
   </div>
 
-  <!-- ── Modal ── -->
+  <!-- ── Client Modal ── -->
   <div class="modal-overlay" id="modal-overlay" hidden>
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <div class="modal-header">
@@ -193,6 +205,62 @@
           <button type="submit" class="btn btn-primary" id="save-btn">Save Client</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- ── Visit Modal ── -->
+  <div class="modal-overlay" id="visit-modal-overlay" hidden>
+    <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="visit-modal-title">
+      <div class="modal-header">
+        <h2 id="visit-modal-title">Log Visit</h2>
+        <button class="modal-close" id="visit-modal-close" aria-label="Close">✕</button>
+      </div>
+
+      <form id="visit-form" class="modal-body" novalidate>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="v-date">Date &amp; Time <span class="req">*</span></label>
+            <input id="v-date" name="visited_at" type="datetime-local" required />
+          </div>
+          <div class="form-group">
+            <label for="v-type">Type</label>
+            <select id="v-type" name="type">
+              <option value="visit">🏥 In-person visit</option>
+              <option value="call">📞 Phone call</option>
+              <option value="email">📧 Email</option>
+              <option value="other">📝 Other</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="v-notes">Notes</label>
+          <textarea id="v-notes" name="notes" rows="4" placeholder="What was discussed, products shown, outcomes…"></textarea>
+        </div>
+
+        <div class="form-group">
+          <label for="v-followup">Next Follow-up <span class="hint">(optional)</span></label>
+          <input id="v-followup" name="next_followup_date" type="date" />
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" id="visit-cancel-btn">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="visit-save-btn">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ── AI Follow-up Modal ── -->
+  <div class="modal-overlay" id="ai-modal-overlay" hidden>
+    <div class="modal modal-sm" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <h2>✨ AI Follow-up Suggestion</h2>
+        <button class="modal-close" id="ai-modal-close" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body" id="ai-modal-body">
+        <div class="ai-loading"><div class="spinner"></div> Generating…</div>
+      </div>
     </div>
   </div>
 
