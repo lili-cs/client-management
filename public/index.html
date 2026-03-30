@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sales CRM</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app" id="app">
+
+    <!-- ── Sidebar ── -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-top">
+        <div class="brand">
+          <span class="brand-icon">◈</span>
+          <span class="brand-name">Sales CRM</span>
+        </div>
+        <button class="btn btn-primary" id="add-btn">
+          <span>+</span> New Client
+        </button>
+      </div>
+
+      <div class="search-wrap">
+        <span class="search-icon">⌕</span>
+        <input
+          type="search"
+          id="search-input"
+          class="search-input"
+          placeholder="Search clients…"
+          autocomplete="off"
+        />
+      </div>
+
+      <div class="client-list" id="client-list">
+        <div class="list-loading" id="list-loading">Loading…</div>
+      </div>
+
+      <footer class="sidebar-footer">
+        <button class="btn btn-ghost btn-sm" id="backup-btn" title="Backup all client data to cloud storage">
+          <span>☁</span> Backup Now
+        </button>
+        <span class="storage-badge" id="storage-badge">—</span>
+      </footer>
+    </aside>
+
+    <!-- ── Main ── -->
+    <main class="main" id="main">
+      <div class="empty-state" id="empty-state">
+        <div class="empty-icon">◈</div>
+        <h2>Select a client</h2>
+        <p>Choose a client from the list, or add a new one.</p>
+        <button class="btn btn-primary" id="empty-add-btn">+ New Client</button>
+      </div>
+
+      <div class="detail" id="detail" hidden>
+        <div class="detail-header">
+          <button class="btn btn-ghost btn-sm back-btn" id="back-btn">← Back</button>
+          <div class="detail-actions">
+            <button class="btn btn-ghost btn-sm" id="edit-btn">Edit</button>
+            <button class="btn btn-danger btn-sm" id="delete-btn">Delete</button>
+          </div>
+        </div>
+
+        <div class="detail-body">
+          <div class="client-hero">
+            <div class="client-avatar" id="detail-avatar"></div>
+            <div class="client-title">
+              <h2 id="detail-name"></h2>
+              <p id="detail-company" class="muted"></p>
+            </div>
+          </div>
+
+          <div class="info-grid" id="detail-info"></div>
+
+          <div class="notes-section" id="detail-notes-section">
+            <h3 class="section-title">Notes</h3>
+            <p id="detail-notes" class="notes-text"></p>
+          </div>
+
+          <div class="tags-section" id="detail-tags-section">
+            <div id="detail-tags" class="tags-list"></div>
+          </div>
+
+          <!-- Photos -->
+          <div class="photos-section">
+            <div class="photos-header">
+              <h3 class="section-title">Photos</h3>
+              <span class="photo-count" id="photo-count">0 / 10</span>
+            </div>
+
+            <div class="photo-upload-area" id="photo-upload-area">
+              <input type="file" id="photo-input" accept="image/jpeg,image/png,image/gif,image/webp" hidden />
+              <div class="upload-prompt" id="upload-prompt">
+                <span class="upload-icon">⬆</span>
+                <p>Drop photos here or <button type="button" class="link-btn" id="browse-btn">browse</button></p>
+                <p class="upload-hint">JPEG, PNG, GIF, WebP · max 15 MB each · up to 10 photos</p>
+              </div>
+            </div>
+
+            <div class="photo-grid" id="photo-grid"></div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ── Modal ── -->
+  <div class="modal-overlay" id="modal-overlay" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-header">
+        <h2 id="modal-title">New Client</h2>
+        <button class="modal-close" id="modal-close" aria-label="Close">✕</button>
+      </div>
+
+      <form id="client-form" class="modal-body" novalidate>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="f-name">Full Name <span class="req">*</span></label>
+            <input id="f-name" name="name" type="text" required autocomplete="name" />
+            <span class="field-error" id="name-error"></span>
+          </div>
+          <div class="form-group">
+            <label for="f-company">Company</label>
+            <input id="f-company" name="company" type="text" autocomplete="organization" />
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="f-email">Email</label>
+            <input id="f-email" name="email" type="email" autocomplete="email" />
+          </div>
+          <div class="form-group">
+            <label for="f-phone">Phone</label>
+            <input id="f-phone" name="phone" type="tel" autocomplete="tel" />
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="f-address">Address</label>
+          <input id="f-address" name="address" type="text" autocomplete="street-address" />
+        </div>
+
+        <div class="form-group">
+          <label for="f-tags">Tags <span class="hint">(comma-separated)</span></label>
+          <input id="f-tags" name="tags" type="text" placeholder="e.g. VIP, Enterprise, Renewal" />
+        </div>
+
+        <div class="form-group">
+          <label for="f-notes">Notes</label>
+          <textarea id="f-notes" name="notes" rows="4" placeholder="Meeting notes, preferences, follow-ups…"></textarea>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" id="cancel-btn">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="save-btn">Save Client</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ── Lightbox ── -->
+  <div class="lightbox-overlay" id="lightbox-overlay" hidden>
+    <button class="lightbox-close" id="lightbox-close" aria-label="Close">✕</button>
+    <button class="lightbox-arrow lightbox-prev" id="lightbox-prev" aria-label="Previous">‹</button>
+    <img class="lightbox-img" id="lightbox-img" src="" alt="" />
+    <button class="lightbox-arrow lightbox-next" id="lightbox-next" aria-label="Next">›</button>
+  </div>
+
+  <!-- ── Toast container ── -->
+  <div class="toast-container" id="toast-container" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
