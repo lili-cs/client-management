@@ -568,6 +568,11 @@ app.delete('/api/clients/:id/profile-photo', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── Catch unmatched /api/* — return JSON, never HTML ─────────────────────────
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: `Not found: ${req.method} ${req.path}` });
+});
+
 // ── Export for Vercel / start for local dev ───────────────────────────────────
 if (require.main === module) {
   const PORT = process.env.PORT || 3000;

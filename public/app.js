@@ -21,7 +21,9 @@ async function api(method, url, body) {
     body: body ? JSON.stringify(body) : undefined,
   };
   const res = await fetch(url, opts);
-  const data = await res.json();
+  let data;
+  try { data = await res.json(); }
+  catch { throw new Error(`Server error (HTTP ${res.status}) — try restarting the server`); }
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
 }
