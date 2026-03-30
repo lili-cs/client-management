@@ -63,16 +63,19 @@ async function initDb() {
 
   await db.execute(`
     CREATE TABLE IF NOT EXISTS clients (
-      id          TEXT PRIMARY KEY,
-      name        TEXT NOT NULL,
-      company     TEXT DEFAULT '',
-      email       TEXT DEFAULT '',
-      phone       TEXT DEFAULT '',
-      address     TEXT DEFAULT '',
-      notes       TEXT DEFAULT '',
-      tags        TEXT DEFAULT '',
-      created_at  TEXT DEFAULT (datetime('now')),
-      updated_at  TEXT DEFAULT (datetime('now'))
+      id               TEXT PRIMARY KEY,
+      name             TEXT NOT NULL,
+      company          TEXT DEFAULT '',
+      email            TEXT DEFAULT '',
+      phone            TEXT DEFAULT '',
+      address          TEXT DEFAULT '',
+      clinic_name      TEXT DEFAULT '',
+      manager          TEXT DEFAULT '',
+      relevant_people  TEXT DEFAULT '',
+      notes            TEXT DEFAULT '',
+      tags             TEXT DEFAULT '',
+      created_at       TEXT DEFAULT (datetime('now')),
+      updated_at       TEXT DEFAULT (datetime('now'))
     )
   `);
 
@@ -89,6 +92,9 @@ async function initDb() {
   `);
 
   try { await db.execute('ALTER TABLE client_photos ADD COLUMN drive_path TEXT'); } catch {}
+  try { await db.execute("ALTER TABLE clients ADD COLUMN clinic_name TEXT DEFAULT ''"); } catch {}
+  try { await db.execute("ALTER TABLE clients ADD COLUMN manager TEXT DEFAULT ''"); } catch {}
+  try { await db.execute("ALTER TABLE clients ADD COLUMN relevant_people TEXT DEFAULT ''"); } catch {}
 }
 
 // Lazy init — runs once, reused across warm Vercel invocations
@@ -224,14 +230,14 @@ app.get('/api/clients/:id', async (req, res) => {
 
 app.post('/api/clients', async (req, res) => {
   try {
-    const { name, company, email, phone, address, notes, tags } = req.body;
+    const { name, company, email, phone, address, clinic_name, manager, relevant_people, notes, tags } = req.body;
     if (!name?.trim()) return res.status(400).json({ error: 'Name is required' });
 
     const id = uuidv4();
     await db.execute({
-      sql: `INSERT INTO clients (id, name, company, email, phone, address, notes, tags)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [id, name.trim(), company||'', email||'', phone||'', address||'', notes||'', tags||''],
+      sql: `INSERT INTO clients (id, name, company, email, phone, address, clinic_name, manager, relevant_people, notes, tags)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [id, name.trim(), company||'', email||'', phone||'', address||'', clinic_name||'', manager||'', relevant_people||'', notes||'', tags||''],
     });
     const r = await db.execute({ sql: 'SELECT * FROM clients WHERE id = ?', args: [id] });
     res.status(201).json(row(r.rows[0]));
@@ -240,16 +246,17 @@ app.post('/api/clients', async (req, res) => {
 
 app.put('/api/clients/:id', async (req, res) => {
   try {
-    const { name, company, email, phone, address, notes, tags } = req.body;
+    const { name, company, email, phone, address, clinic_name, manager, relevant_people, notes, tags } = req.body;
     if (!name?.trim()) return res.status(400).json({ error: 'Name is required' });
 
     const ex = await db.execute({ sql: 'SELECT id FROM clients WHERE id = ?', args: [req.params.id] });
     if (!ex.rows[0]) return res.status(404).json({ error: 'Client not found' });
 
     await db.execute({
-      sql: `UPDATE clients SET name=?, company=?, email=?, phone=?, address=?, notes=?, tags=?,
+      sql: `UPDATE clients SET name=?, company=?, email=?, phone=?, address=?,
+            clinic_name=?, manager=?, relevant_people=?, notes=?, tags=?,
             updated_at=datetime('now') WHERE id=?`,
-      args: [name.trim(), company||'', email||'', phone||'', address||'', notes||'', tags||'', req.params.id],
+      args: [name.trim(), company||'', email||'', phone||'', address||'', clinic_name||'', manager||'', relevant_people||'', notes||'', tags||'', req.params.id],
     });
     const r = await db.execute({ sql: 'SELECT * FROM clients WHERE id = ?', args: [req.params.id] });
     res.json(row(r.rows[0]));

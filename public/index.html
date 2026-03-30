@@ -71,6 +71,11 @@
 
           <div class="info-grid" id="detail-info"></div>
 
+          <div class="notes-section" id="detail-relevant-section">
+            <h3 class="section-title">Relevant People</h3>
+            <p id="detail-relevant" class="notes-text"></p>
+          </div>
+
           <div class="notes-section" id="detail-notes-section">
             <h3 class="section-title">Notes</h3>
             <p id="detail-notes" class="notes-text"></p>
@@ -138,6 +143,22 @@
         <div class="form-group">
           <label for="f-address">Address</label>
           <input id="f-address" name="address" type="text" autocomplete="street-address" />
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label for="f-clinic-name">Clinic Name</label>
+            <input id="f-clinic-name" name="clinic_name" type="text" placeholder="e.g. Downtown Medical Clinic" />
+          </div>
+          <div class="form-group">
+            <label for="f-manager">Manager</label>
+            <input id="f-manager" name="manager" type="text" placeholder="e.g. Dr. Sarah Lee" />
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="f-relevant-people">Relevant People <span class="hint">(one per line)</span></label>
+          <textarea id="f-relevant-people" name="relevant_people" rows="3" placeholder="e.g. John Smith – Receptionist&#10;Mary Wong – Nurse"></textarea>
         </div>
 
         <div class="form-group">

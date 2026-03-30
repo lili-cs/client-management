@@ -125,11 +125,13 @@ function renderDetail(client) {
 
   // Info grid
   const infoFields = [
-    { label: 'Email',   value: client.email,   link: client.email ? `mailto:${client.email}` : null },
-    { label: 'Phone',   value: client.phone,   link: client.phone ? `tel:${client.phone}` : null },
-    { label: 'Address', value: client.address, link: null },
-    { label: 'Added',   value: formatDate(client.created_at), link: null },
-    { label: 'Updated', value: formatDate(client.updated_at), link: null },
+    { label: 'Email',       value: client.email,       link: client.email ? `mailto:${client.email}` : null },
+    { label: 'Phone',       value: client.phone,       link: client.phone ? `tel:${client.phone}` : null },
+    { label: 'Address',     value: client.address,     link: null },
+    { label: 'Clinic Name', value: client.clinic_name, link: null },
+    { label: 'Manager',     value: client.manager,     link: null },
+    { label: 'Added',       value: formatDate(client.created_at), link: null },
+    { label: 'Updated',     value: formatDate(client.updated_at), link: null },
   ].filter(f => f.value);
 
   document.getElementById('detail-info').innerHTML = infoFields.map(f => `
@@ -142,6 +144,15 @@ function renderDetail(client) {
       </div>
     </div>
   `).join('');
+
+  // Relevant people
+  const relevantSection = document.getElementById('detail-relevant-section');
+  if (client.relevant_people && client.relevant_people.trim()) {
+    document.getElementById('detail-relevant').textContent = client.relevant_people;
+    relevantSection.hidden = false;
+  } else {
+    relevantSection.hidden = true;
+  }
 
   // Notes
   const notesSection = document.getElementById('detail-notes-section');
@@ -247,7 +258,7 @@ function openModal(client = null) {
   nameErr.textContent = '';
 
   // Populate form
-  const fields = ['name','company','email','phone','address','tags','notes'];
+  const fields = ['name','company','email','phone','address','clinic_name','manager','relevant_people','tags','notes'];
   fields.forEach(f => {
     const el = form.elements[f];
     if (el) el.value = client ? (client[f] || '') : '';
@@ -282,12 +293,15 @@ async function submitForm(e) {
 
   const payload = {
     name,
-    company: form.elements['company'].value.trim(),
-    email:   form.elements['email'].value.trim(),
-    phone:   form.elements['phone'].value.trim(),
-    address: form.elements['address'].value.trim(),
-    tags:    form.elements['tags'].value.trim(),
-    notes:   form.elements['notes'].value.trim(),
+    company:          form.elements['company'].value.trim(),
+    email:            form.elements['email'].value.trim(),
+    phone:            form.elements['phone'].value.trim(),
+    address:          form.elements['address'].value.trim(),
+    clinic_name:      form.elements['clinic_name'].value.trim(),
+    manager:          form.elements['manager'].value.trim(),
+    relevant_people:  form.elements['relevant_people'].value.trim(),
+    tags:             form.elements['tags'].value.trim(),
+    notes:            form.elements['notes'].value.trim(),
   };
 
   const clientId = form.dataset.clientId;
