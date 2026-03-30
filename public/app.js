@@ -110,16 +110,17 @@ function renderList() {
   }
 
   // Named areas first (alphabetical), then no-area group last
-  const sortedKeys = [...groups.keys()].sort((a, b) => {
-    if (a === NO_AREA) return 1;
-    if (b === NO_AREA) return -1;
-    return a.localeCompare(b);
-  });
+  const namedAreas = [...groups.keys()].filter(k => k !== NO_AREA).sort((a, b) => a.localeCompare(b));
+  const hasNamed   = namedAreas.length > 0;
+  const sortedKeys = hasNamed ? [...namedAreas, ...(groups.has(NO_AREA) ? [NO_AREA] : [])] : [NO_AREA];
 
   let html = '';
   for (const key of sortedKeys) {
-    const label = key === NO_AREA ? 'No Area' : key;
-    html += `<div class="area-header">${escHtml(label)}</div>`;
+    // Only show area header when there are multiple groups
+    if (sortedKeys.length > 1 || hasNamed) {
+      const label = key === NO_AREA ? 'No Area' : key;
+      html += `<div class="area-header">${escHtml(label)}</div>`;
+    }
     html += groups.get(key).map(clientCardHtml).join('');
   }
 
@@ -209,8 +210,44 @@ function renderDetail(client) {
     tagsSection.hidden = true;
   }
 
+  // Nearby clients (same area)
+  renderNearby(client);
+
   // Photos
   renderPhotos(client);
+}
+
+function renderNearby(client) {
+  const section = document.getElementById('nearby-section');
+  const area = (client.area || '').trim();
+
+  const nearby = state.clients.filter(c =>
+    c.id !== client.id && (c.area || '').trim() === area
+  );
+
+  if (!nearby.length) { section.hidden = true; return; }
+
+  section.hidden = false;
+  document.getElementById('nearby-title').textContent =
+    area ? `Others in ${area}` : 'Others with No Area';
+
+  document.getElementById('nearby-list').innerHTML = nearby.map(c => `
+    <div class="nearby-card" data-id="${escHtml(c.id)}" role="button" tabindex="0">
+      <div class="nearby-avatar" style="background:${avatarColor(c.name)}">
+        ${c.profile_photo
+          ? `<img src="${photoUrl(c.id, c.profile_photo)}" alt="${escHtml(c.name)}" />`
+          : escHtml(initials(c.name))}
+      </div>
+      <div class="nearby-info">
+        <div class="nearby-name">${escHtml(c.clinic_name || c.name)}</div>
+        <div class="nearby-sub">${escHtml(c.address || c.manager || '—')}</div>
+      </div>
+    </div>`).join('');
+
+  document.getElementById('nearby-list').querySelectorAll('.nearby-card').forEach(card => {
+    card.addEventListener('click', () => selectClient(card.dataset.id));
+    card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') selectClient(card.dataset.id); });
+  });
 }
 
 function renderPhotos(client) {
