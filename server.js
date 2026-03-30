@@ -1,6 +1,6 @@
 require('dotenv').config();
 const express = require('express');
-const Database = require('better-sqlite3');
+const { createClient } = require('@libsql/client');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -19,9 +19,9 @@ let PutObjectCommand, GetObjectCommand, DeleteObjectCommand, DeleteObjectsComman
 
 if (R2_ENABLED) {
   const sdk = require('@aws-sdk/client-s3');
-  PutObjectCommand    = sdk.PutObjectCommand;
-  GetObjectCommand    = sdk.GetObjectCommand;
-  DeleteObjectCommand = sdk.DeleteObjectCommand;
+  PutObjectCommand     = sdk.PutObjectCommand;
+  GetObjectCommand     = sdk.GetObjectCommand;
+  DeleteObjectCommand  = sdk.DeleteObjectCommand;
   DeleteObjectsCommand = sdk.DeleteObjectsCommand;
 
   r2 = new sdk.S3Client({
@@ -34,50 +34,61 @@ if (R2_ENABLED) {
   });
 }
 
-// ── Directory setup (local fallback) ─────────────────────────────────────────
+// ── Turso / libSQL setup ──────────────────────────────────────────────────────
+// Uses Turso when TURSO_DATABASE_URL is set, otherwise falls back to a local
+// SQLite file — same @libsql/client, same API, same SQL syntax either way.
+const DB_DIR = path.join(__dirname, 'db');
+if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
+
+const db = createClient({
+  url: process.env.TURSO_DATABASE_URL || `file:${path.join(DB_DIR, 'clients.db')}`,
+  authToken: process.env.TURSO_AUTH_TOKEN, // ignored for local file
+});
+
+async function initDb() {
+  // Pragmas are best-effort — Turso remote ignores some of them
+  try { await db.execute('PRAGMA journal_mode = WAL'); } catch {}
+  try { await db.execute('PRAGMA foreign_keys = ON'); } catch {}
+
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS clients (
+      id          TEXT PRIMARY KEY,
+      name        TEXT NOT NULL,
+      company     TEXT DEFAULT '',
+      email       TEXT DEFAULT '',
+      phone       TEXT DEFAULT '',
+      address     TEXT DEFAULT '',
+      notes       TEXT DEFAULT '',
+      tags        TEXT DEFAULT '',
+      created_at  TEXT DEFAULT (datetime('now')),
+      updated_at  TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS client_photos (
+      id            TEXT PRIMARY KEY,
+      client_id     TEXT NOT NULL,
+      filename      TEXT NOT NULL,
+      original_name TEXT DEFAULT '',
+      drive_path    TEXT,
+      created_at    TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Migration: add drive_path if upgrading from older schema
+  try { await db.execute('ALTER TABLE client_photos ADD COLUMN drive_path TEXT'); } catch {}
+}
+
+// ── Directory setup (local fallback for uploads/backups) ──────────────────────
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
-const DB_DIR      = path.join(__dirname, 'db');
 const BACKUP_DIR  = path.join(__dirname, 'backups');
-[DB_DIR, UPLOADS_DIR, BACKUP_DIR].forEach(dir => {
+[UPLOADS_DIR, BACKUP_DIR].forEach(dir => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
-// ── SQLite ───────────────────────────────────────────────────────────────────
-const db = new Database(path.join(DB_DIR, 'clients.db'));
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS clients (
-    id          TEXT PRIMARY KEY,
-    name        TEXT NOT NULL,
-    company     TEXT DEFAULT '',
-    email       TEXT DEFAULT '',
-    phone       TEXT DEFAULT '',
-    address     TEXT DEFAULT '',
-    notes       TEXT DEFAULT '',
-    tags        TEXT DEFAULT '',
-    created_at  TEXT DEFAULT (datetime('now')),
-    updated_at  TEXT DEFAULT (datetime('now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS client_photos (
-    id            TEXT PRIMARY KEY,
-    client_id     TEXT NOT NULL,
-    filename      TEXT NOT NULL,
-    original_name TEXT DEFAULT '',
-    drive_path    TEXT,
-    created_at    TEXT DEFAULT (datetime('now')),
-    FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
-  );
-`);
-
-// Migrate: add drive_path if upgrading from original schema
-try { db.exec('ALTER TABLE client_photos ADD COLUMN drive_path TEXT'); } catch {}
-
-// ── Multer ───────────────────────────────────────────────────────────────────
-// Memory storage when R2 is enabled (upload buffer → R2).
-// Disk storage as fallback (save to ./uploads/).
+// ── Multer ────────────────────────────────────────────────────────────────────
 const multerStorage = R2_ENABLED
   ? multer.memoryStorage()
   : multer.diskStorage({
@@ -100,49 +111,11 @@ const upload = multer({
   },
 });
 
-// ── App ──────────────────────────────────────────────────────────────────────
-const app = express();
-app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+// ── Helpers ───────────────────────────────────────────────────────────────────
+// libSQL rows have named column access but need spreading for plain JSON output
+function row(r)  { return r ? { ...r } : null; }
+function rows(rs){ return rs.map(r => ({ ...r })); }
 
-// ── Photo proxy endpoint ──────────────────────────────────────────────────────
-// Single URL scheme for both R2 and local — frontend never changes.
-// R2: streams directly from bucket. Local: serves from disk.
-app.get('/api/photos/:clientId/:filename', async (req, res) => {
-  const { clientId, filename } = req.params;
-
-  if (!/^[\w-]+$/.test(clientId) || !/^[\w\-.]+$/.test(filename)) {
-    return res.status(400).end();
-  }
-
-  const ext = path.extname(filename).toLowerCase();
-  const contentTypes = {
-    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-    '.png': 'image/png',  '.gif': 'image/gif',  '.webp': 'image/webp',
-  };
-
-  if (R2_ENABLED) {
-    try {
-      const obj = await r2.send(new GetObjectCommand({
-        Bucket: process.env.R2_BUCKET_NAME,
-        Key: `photos/${clientId}/${filename}`,
-      }));
-      res.setHeader('Content-Type', obj.ContentType || contentTypes[ext] || 'image/jpeg');
-      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-      obj.Body.pipe(res); // stream directly — no buffering
-    } catch (err) {
-      if (err.name === 'NoSuchKey') res.status(404).end();
-      else { console.error('R2 get:', err.message); res.status(500).end(); }
-    }
-  } else {
-    const filePath = path.join(UPLOADS_DIR, clientId, filename);
-    if (!fs.existsSync(filePath)) return res.status(404).end();
-    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-    res.sendFile(filePath);
-  }
-});
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
 async function saveBackup(payload) {
   const ts      = new Date().toISOString().replace(/[:.]/g, '-');
   const content = JSON.stringify(payload, null, 2);
@@ -163,116 +136,191 @@ async function saveBackup(payload) {
   }
 }
 
-// ── Routes: clients ───────────────────────────────────────────────────────────
+// ── App ───────────────────────────────────────────────────────────────────────
+const app = express();
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
 
-app.get('/api/clients', (req, res) => {
-  const like = `%${(req.query.search || '').trim()}%`;
-  const rows = db.prepare(`
-    SELECT c.*, COUNT(p.id) AS photo_count
-    FROM clients c
-    LEFT JOIN client_photos p ON p.client_id = c.id
-    WHERE c.name    LIKE ? OR c.company LIKE ?
-       OR c.email   LIKE ? OR c.phone   LIKE ?
-       OR c.tags    LIKE ?
-    GROUP BY c.id
-    ORDER BY c.updated_at DESC
-  `).all(like, like, like, like, like);
-  res.json(rows);
-});
-
-app.get('/api/clients/:id', (req, res) => {
-  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(req.params.id);
-  if (!client) return res.status(404).json({ error: 'Client not found' });
-
-  const photos = db
-    .prepare('SELECT * FROM client_photos WHERE client_id = ? ORDER BY created_at ASC')
-    .all(req.params.id);
-
-  res.json({ ...client, photos });
-});
-
-app.post('/api/clients', (req, res) => {
-  const { name, company, email, phone, address, notes, tags } = req.body;
-  if (!name?.trim()) return res.status(400).json({ error: 'Name is required' });
-
-  const id = uuidv4();
-  db.prepare(`
-    INSERT INTO clients (id, name, company, email, phone, address, notes, tags)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, name.trim(), company || '', email || '', phone || '', address || '', notes || '', tags || '');
-
-  res.status(201).json(db.prepare('SELECT * FROM clients WHERE id = ?').get(id));
-});
-
-app.put('/api/clients/:id', (req, res) => {
-  const { name, company, email, phone, address, notes, tags } = req.body;
-  if (!name?.trim()) return res.status(400).json({ error: 'Name is required' });
-
-  if (!db.prepare('SELECT id FROM clients WHERE id = ?').get(req.params.id)) {
-    return res.status(404).json({ error: 'Client not found' });
+// ── Photo proxy endpoint ──────────────────────────────────────────────────────
+app.get('/api/photos/:clientId/:filename', async (req, res) => {
+  const { clientId, filename } = req.params;
+  if (!/^[\w-]+$/.test(clientId) || !/^[\w\-.]+$/.test(filename)) {
+    return res.status(400).end();
   }
 
-  db.prepare(`
-    UPDATE clients
-    SET name=?, company=?, email=?, phone=?, address=?, notes=?, tags=?,
-        updated_at=datetime('now')
-    WHERE id=?
-  `).run(name.trim(), company || '', email || '', phone || '', address || '', notes || '', tags || '', req.params.id);
+  const ext = path.extname(filename).toLowerCase();
+  const contentTypes = {
+    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+    '.png': 'image/png',  '.gif': 'image/gif',  '.webp': 'image/webp',
+  };
 
-  res.json(db.prepare('SELECT * FROM clients WHERE id = ?').get(req.params.id));
+  if (R2_ENABLED) {
+    try {
+      const obj = await r2.send(new GetObjectCommand({
+        Bucket: process.env.R2_BUCKET_NAME,
+        Key: `photos/${clientId}/${filename}`,
+      }));
+      res.setHeader('Content-Type', obj.ContentType || contentTypes[ext] || 'image/jpeg');
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      obj.Body.pipe(res);
+    } catch (err) {
+      if (err.name === 'NoSuchKey') res.status(404).end();
+      else { console.error('R2 get:', err.message); res.status(500).end(); }
+    }
+  } else {
+    const filePath = path.join(UPLOADS_DIR, clientId, filename);
+    if (!fs.existsSync(filePath)) return res.status(404).end();
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    res.sendFile(filePath);
+  }
+});
+
+// ── Routes: clients ───────────────────────────────────────────────────────────
+
+app.get('/api/clients', async (req, res) => {
+  try {
+    const like = `%${(req.query.search || '').trim()}%`;
+    const result = await db.execute({
+      sql: `SELECT c.*, COUNT(p.id) AS photo_count
+            FROM clients c
+            LEFT JOIN client_photos p ON p.client_id = c.id
+            WHERE c.name    LIKE ? OR c.company LIKE ?
+               OR c.email   LIKE ? OR c.phone   LIKE ?
+               OR c.tags    LIKE ?
+            GROUP BY c.id
+            ORDER BY c.updated_at DESC`,
+      args: [like, like, like, like, like],
+    });
+    res.json(rows(result.rows));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/clients/:id', async (req, res) => {
+  try {
+    const clientRes = await db.execute({
+      sql: 'SELECT * FROM clients WHERE id = ?',
+      args: [req.params.id],
+    });
+    const client = row(clientRes.rows[0]);
+    if (!client) return res.status(404).json({ error: 'Client not found' });
+
+    const photosRes = await db.execute({
+      sql: 'SELECT * FROM client_photos WHERE client_id = ? ORDER BY created_at ASC',
+      args: [req.params.id],
+    });
+    res.json({ ...client, photos: rows(photosRes.rows) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/clients', async (req, res) => {
+  try {
+    const { name, company, email, phone, address, notes, tags } = req.body;
+    if (!name?.trim()) return res.status(400).json({ error: 'Name is required' });
+
+    const id = uuidv4();
+    await db.execute({
+      sql: `INSERT INTO clients (id, name, company, email, phone, address, notes, tags)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [id, name.trim(), company || '', email || '', phone || '', address || '', notes || '', tags || ''],
+    });
+
+    const result = await db.execute({ sql: 'SELECT * FROM clients WHERE id = ?', args: [id] });
+    res.status(201).json(row(result.rows[0]));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/clients/:id', async (req, res) => {
+  try {
+    const { name, company, email, phone, address, notes, tags } = req.body;
+    if (!name?.trim()) return res.status(400).json({ error: 'Name is required' });
+
+    const existing = await db.execute({ sql: 'SELECT id FROM clients WHERE id = ?', args: [req.params.id] });
+    if (!existing.rows[0]) return res.status(404).json({ error: 'Client not found' });
+
+    await db.execute({
+      sql: `UPDATE clients
+            SET name=?, company=?, email=?, phone=?, address=?, notes=?, tags=?,
+                updated_at=datetime('now')
+            WHERE id=?`,
+      args: [name.trim(), company || '', email || '', phone || '', address || '', notes || '', tags || '', req.params.id],
+    });
+
+    const result = await db.execute({ sql: 'SELECT * FROM clients WHERE id = ?', args: [req.params.id] });
+    res.json(row(result.rows[0]));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.delete('/api/clients/:id', async (req, res) => {
-  if (!db.prepare('SELECT id FROM clients WHERE id = ?').get(req.params.id)) {
-    return res.status(404).json({ error: 'Client not found' });
-  }
+  try {
+    const existing = await db.execute({ sql: 'SELECT id FROM clients WHERE id = ?', args: [req.params.id] });
+    if (!existing.rows[0]) return res.status(404).json({ error: 'Client not found' });
 
-  const photos = db.prepare('SELECT * FROM client_photos WHERE client_id = ?').all(req.params.id);
+    const photosRes = await db.execute({
+      sql: 'SELECT * FROM client_photos WHERE client_id = ?',
+      args: [req.params.id],
+    });
+    const clientPhotos = rows(photosRes.rows);
 
-  if (R2_ENABLED && photos.length) {
-    const objects = photos
-      .filter(p => p.drive_path)
-      .map(p => ({ Key: p.drive_path }));
-    if (objects.length) {
-      try {
-        await r2.send(new DeleteObjectsCommand({
-          Bucket: process.env.R2_BUCKET_NAME,
-          Delete: { Objects: objects },
-        }));
-      } catch (e) { console.error('R2 deleteObjects:', e.message); }
+    if (R2_ENABLED && clientPhotos.length) {
+      const objects = clientPhotos.filter(p => p.drive_path).map(p => ({ Key: p.drive_path }));
+      if (objects.length) {
+        try {
+          await r2.send(new DeleteObjectsCommand({
+            Bucket: process.env.R2_BUCKET_NAME,
+            Delete: { Objects: objects },
+          }));
+        } catch (e) { console.error('R2 deleteObjects:', e.message); }
+      }
+    } else if (!R2_ENABLED) {
+      const clientDir = path.join(UPLOADS_DIR, req.params.id);
+      if (fs.existsSync(clientDir)) fs.rmSync(clientDir, { recursive: true, force: true });
     }
-  } else {
-    const clientDir = path.join(UPLOADS_DIR, req.params.id);
-    if (fs.existsSync(clientDir)) fs.rmSync(clientDir, { recursive: true, force: true });
-  }
 
-  db.prepare('DELETE FROM clients WHERE id = ?').run(req.params.id);
-  res.json({ success: true });
+    // Delete photos then client (cascade may not fire on all libSQL backends)
+    await db.execute({ sql: 'DELETE FROM client_photos WHERE client_id = ?', args: [req.params.id] });
+    await db.execute({ sql: 'DELETE FROM clients WHERE id = ?', args: [req.params.id] });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ── Routes: photos ────────────────────────────────────────────────────────────
 
-app.post('/api/clients/:id/photos', (req, res) => {
-  if (!db.prepare('SELECT id FROM clients WHERE id = ?').get(req.params.id)) {
-    return res.status(404).json({ error: 'Client not found' });
-  }
+app.post('/api/clients/:id/photos', async (req, res) => {
+  try {
+    const existing = await db.execute({ sql: 'SELECT id FROM clients WHERE id = ?', args: [req.params.id] });
+    if (!existing.rows[0]) return res.status(404).json({ error: 'Client not found' });
 
-  const count = db
-    .prepare('SELECT COUNT(*) AS n FROM client_photos WHERE client_id = ?')
-    .get(req.params.id).n;
-  if (count >= 10) {
-    return res.status(400).json({ error: 'Maximum of 10 photos per client reached' });
+    const countRes = await db.execute({
+      sql: 'SELECT COUNT(*) AS n FROM client_photos WHERE client_id = ?',
+      args: [req.params.id],
+    });
+    if (Number(countRes.rows[0].n) >= 10) {
+      return res.status(400).json({ error: 'Maximum of 10 photos per client reached' });
+    }
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
   }
 
   upload.single('photo')(req, res, async err => {
     if (err) return res.status(400).json({ error: err.message });
     if (!req.file) return res.status(400).json({ error: 'No file provided' });
 
-    // Re-check after upload (concurrent request guard)
-    const freshCount = db
-      .prepare('SELECT COUNT(*) AS n FROM client_photos WHERE client_id = ?')
-      .get(req.params.id).n;
-    if (freshCount >= 10) {
+    // Re-check count after upload
+    const freshCount = await db.execute({
+      sql: 'SELECT COUNT(*) AS n FROM client_photos WHERE client_id = ?',
+      args: [req.params.id],
+    });
+    if (Number(freshCount.rows[0].n) >= 10) {
       if (req.file.path) fs.unlinkSync(req.file.path);
       return res.status(400).json({ error: 'Maximum of 10 photos per client reached' });
     }
@@ -298,50 +346,61 @@ app.post('/api/clients/:id/photos', (req, res) => {
     }
 
     const photoId = uuidv4();
-    db.prepare(`
-      INSERT INTO client_photos (id, client_id, filename, original_name, drive_path)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(photoId, req.params.id, filename, req.file.originalname, drivePath);
+    await db.execute({
+      sql: `INSERT INTO client_photos (id, client_id, filename, original_name, drive_path)
+            VALUES (?, ?, ?, ?, ?)`,
+      args: [photoId, req.params.id, filename, req.file.originalname, drivePath],
+    });
 
-    res.status(201).json(db.prepare('SELECT * FROM client_photos WHERE id = ?').get(photoId));
+    const photoRes = await db.execute({
+      sql: 'SELECT * FROM client_photos WHERE id = ?',
+      args: [photoId],
+    });
+    res.status(201).json(row(photoRes.rows[0]));
   });
 });
 
 app.delete('/api/clients/:id/photos/:photoId', async (req, res) => {
-  const photo = db
-    .prepare('SELECT * FROM client_photos WHERE id = ? AND client_id = ?')
-    .get(req.params.photoId, req.params.id);
-  if (!photo) return res.status(404).json({ error: 'Photo not found' });
+  try {
+    const photoRes = await db.execute({
+      sql: 'SELECT * FROM client_photos WHERE id = ? AND client_id = ?',
+      args: [req.params.photoId, req.params.id],
+    });
+    const photo = row(photoRes.rows[0]);
+    if (!photo) return res.status(404).json({ error: 'Photo not found' });
 
-  if (R2_ENABLED && photo.drive_path) {
-    try {
-      await r2.send(new DeleteObjectCommand({
-        Bucket: process.env.R2_BUCKET_NAME,
-        Key: photo.drive_path,
-      }));
-    } catch (e) { console.error('R2 delete:', e.message); }
-  } else if (!R2_ENABLED) {
-    const filePath = path.join(UPLOADS_DIR, req.params.id, photo.filename);
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    if (R2_ENABLED && photo.drive_path) {
+      try {
+        await r2.send(new DeleteObjectCommand({
+          Bucket: process.env.R2_BUCKET_NAME,
+          Key: photo.drive_path,
+        }));
+      } catch (e) { console.error('R2 delete:', e.message); }
+    } else if (!R2_ENABLED && photo.filename) {
+      const filePath = path.join(UPLOADS_DIR, req.params.id, photo.filename);
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    }
+
+    await db.execute({ sql: 'DELETE FROM client_photos WHERE id = ?', args: [req.params.photoId] });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
-
-  db.prepare('DELETE FROM client_photos WHERE id = ?').run(req.params.photoId);
-  res.json({ success: true });
 });
 
 // ── Routes: backup & info ─────────────────────────────────────────────────────
 
 app.post('/api/backup', async (req, res) => {
   try {
-    const clients = db.prepare('SELECT * FROM clients').all();
-    const photos  = db.prepare('SELECT * FROM client_photos').all();
+    const clientsRes = await db.execute('SELECT * FROM clients');
+    const photosRes  = await db.execute('SELECT * FROM client_photos');
 
     const result = await saveBackup({
       timestamp: new Date().toISOString(),
       version: 1,
-      stats: { clients: clients.length, photos: photos.length },
-      clients,
-      photos,
+      stats: { clients: clientsRes.rows.length, photos: photosRes.rows.length },
+      clients: rows(clientsRes.rows),
+      photos:  rows(photosRes.rows),
     });
 
     res.json({ success: true, ...result });
@@ -356,12 +415,24 @@ app.get('/api/info', (_req, res) => {
     r2Enabled: R2_ENABLED,
     storageType: R2_ENABLED ? 'cloudflare-r2' : 'local',
     bucket: R2_ENABLED ? process.env.R2_BUCKET_NAME : null,
+    db: process.env.TURSO_DATABASE_URL ? 'turso' : 'local-sqlite',
   });
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`\n  Sales Support CRM  →  http://localhost:${PORT}`);
-  console.log(`  Photo/backup storage: ${R2_ENABLED ? `Cloudflare R2 (${process.env.R2_BUCKET_NAME})` : 'local (./uploads/ + ./backups/)'}\n`);
-});
+
+initDb()
+  .then(() => {
+    app.listen(PORT, () => {
+      const dbMode = process.env.TURSO_DATABASE_URL ? `Turso (${process.env.TURSO_DATABASE_URL})` : 'local SQLite';
+      const storeMode = R2_ENABLED ? `Cloudflare R2 (${process.env.R2_BUCKET_NAME})` : 'local (./uploads/ + ./backups/)';
+      console.log(`\n  Sales Support CRM  →  http://localhost:${PORT}`);
+      console.log(`  Database:             ${dbMode}`);
+      console.log(`  Photo/backup storage: ${storeMode}\n`);
+    });
+  })
+  .catch(err => {
+    console.error('Failed to initialise database:', err);
+    process.exit(1);
+  });
