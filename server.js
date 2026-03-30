@@ -47,8 +47,13 @@ if (!R2_ENABLED)                          [UPLOADS_DIR, BACKUP_DIR].forEach(d =>
 if (!process.env.TURSO_DATABASE_URL)      fs.mkdirSync(DB_DIR, { recursive: true });
 
 // ── Turso / libSQL setup ──────────────────────────────────────────────────────
+// Vercel serverless doesn't support WebSockets, so replace libsql:// with https://
+// @libsql/client supports both protocols; https:// uses plain HTTP requests.
+const tursoUrl = (process.env.TURSO_DATABASE_URL || '')
+  .replace(/^libsql:\/\//, 'https://') || `file:${path.join(DB_DIR, 'clients.db')}`;
+
 const db = createClient({
-  url:       process.env.TURSO_DATABASE_URL || `file:${path.join(DB_DIR, 'clients.db')}`,
+  url:       tursoUrl,
   authToken: process.env.TURSO_AUTH_TOKEN,
 });
 
