@@ -344,7 +344,7 @@ function openModal(client = null) {
   nameErr.textContent = '';
 
   // Populate form
-  const fields = ['name','company','email','phone','area','address','clinic_name','manager','relevant_people','tags','notes'];
+  const fields = ['name','company','email','phone','address','clinic_name','manager','relevant_people','tags','notes'];
   fields.forEach(f => {
     const el = form.elements[f];
     if (el) el.value = client ? (client[f] || '') : '';
@@ -422,16 +422,29 @@ async function submitForm(e) {
     addressEl.focus();
     return;
   }
+  // Basic address format: must contain at least one digit and one letter (e.g. "123 Main St")
+  if (!/\d/.test(address) || !/[a-zA-Z]/.test(address) || address.length < 5) {
+    addressEl.classList.add('error');
+    if (addressErr) addressErr.textContent = 'Enter a full street address (e.g. 123 Main St, City).';
+    addressEl.focus();
+    return;
+  }
 
   const name = nameEl.value.trim() || clinic_name; // fallback to clinic name if contact blank
+
+  const clientId = form.dataset.clientId;
+  saveBtn.disabled = true;
+  saveBtn.textContent = 'Detecting area…';
+
+  const area = await geocodeAddress(address);
 
   const payload = {
     name,
     company:          '',
     email:            form.elements['email'].value.trim(),
     phone:            form.elements['phone'].value.trim(),
-    area:             form.elements['area'].value.trim(),
-    address:          form.elements['address'].value.trim(),
+    area:             area || '',
+    address,
     clinic_name:      form.elements['clinic_name'].value.trim(),
     manager:          form.elements['manager'].value.trim(),
     relevant_people:  form.elements['relevant_people'].value.trim(),
@@ -439,8 +452,6 @@ async function submitForm(e) {
     notes:            form.elements['notes'].value.trim(),
   };
 
-  const clientId = form.dataset.clientId;
-  saveBtn.disabled = true;
   saveBtn.textContent = 'Saving…';
 
   try {
@@ -680,24 +691,6 @@ function bindEvents() {
   // Modal photo staging (new client)
   const modalPhotoInput = document.getElementById('modal-photo-input');
   const modalPhotoDrop  = document.getElementById('modal-photo-drop');
-
-  // Auto-geocode address → area
-  document.getElementById('f-address').addEventListener('blur', async () => {
-    const addressEl = document.getElementById('f-address');
-    const areaEl    = document.getElementById('f-area');
-    const status    = document.getElementById('geocode-status');
-    const address   = addressEl.value.trim();
-    if (!address || areaEl.value.trim()) return; // skip if address empty or area already set
-    status.textContent = '⟳ Detecting…';
-    const town = await geocodeAddress(address);
-    if (town) {
-      areaEl.value = town;
-      status.textContent = '✓ Auto-filled';
-      setTimeout(() => { status.textContent = ''; }, 3000);
-    } else {
-      status.textContent = '';
-    }
-  });
 
   document.getElementById('modal-browse-btn').addEventListener('click', () => modalPhotoInput.click());
   modalPhotoInput.addEventListener('change', () => {
