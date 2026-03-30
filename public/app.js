@@ -155,7 +155,14 @@ function clientCardHtml(c) {
       </div>
       <div class="card-info">
         <div class="card-name">${escHtml(c.clinic_name || c.name)}</div>
-        <div class="card-sub">${escHtml(c.area || c.manager || c.email || '—')}</div>
+        ${(() => {
+          const area = [c.area, c.area_state].filter(Boolean).join(', ');
+          const contact = c.manager || c.email || '';
+          if (area && contact) return `
+            <div class="card-sub">${escHtml(area)}</div>
+            <div class="card-sub card-contact">${escHtml(contact)}</div>`;
+          return `<div class="card-sub">${escHtml(area || contact || '—')}</div>`;
+        })()}
       </div>
       ${dotClass ? `<span class="card-followup-dot ${dotClass}" title="${escHtml(dotTitle)}"></span>` : ''}
       ${c.photo_count > 0

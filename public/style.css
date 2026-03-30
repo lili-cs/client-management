@@ -222,6 +222,8 @@ body {
   text-overflow: ellipsis;
 }
 
+.card-contact { color: #64748b; }
+
 .card-badge {
   font-size: 11px;
   color: #64748b;
