@@ -227,15 +227,12 @@ async function selectClient(id) {
 
 // ── Load clients ──────────────────────────────────────────────────────────────
 async function loadClients(search = '') {
-  document.getElementById('list-loading').style.display = 'block';
   try {
     const url = search ? `/api/clients?search=${encodeURIComponent(search)}` : '/api/clients';
     state.clients = await api('GET', url);
     renderList();
   } catch (err) {
     toast('Failed to load clients: ' + err.message, 'error');
-  } finally {
-    document.getElementById('list-loading').style.display = 'none';
   }
 }
 
